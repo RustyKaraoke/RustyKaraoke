@@ -1,0 +1,6 @@
+[book]
+authors = ["Cappy Ishihara"]
+language = "en"
+multilingual = false
+src = "src"
+title = "RustyKaraoke Documentation"
