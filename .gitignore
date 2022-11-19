@@ -1,1 +1,7 @@
 /target
+*.lyr
+*.LYR
+*.MID
+*.mid
+*.cur
+*.CUR

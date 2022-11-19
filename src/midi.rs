@@ -1,4 +1,7 @@
-use encoding::{all::WINDOWS_874, DecoderTrap, Encoding};
+use encoding::{
+    all::{UTF_8, WINDOWS_874},
+    DecoderTrap, Encoding,
+};
 use oxisynth::{Settings, SoundFont, Synth, SynthDescriptor};
 /// MIDI player code
 use std::{
@@ -310,7 +313,11 @@ impl<T: Timer, C: Connection> MidPlayer<T, C> {
         file.read_to_end(&mut buf).unwrap();
         // parse file
         let cur = CurData::read(buf);
-        let mut t = cur.into_tick().iter().map(|x| *x as u32).collect::<Vec<_>>();
+        let mut t = cur
+            .into_tick()
+            .iter()
+            .map(|x| *x as u32)
+            .collect::<Vec<_>>();
 
         // read the lyrics file, excluding the first 4 lines
         let mut lyrics_file = File::open("44706.LYR").unwrap();
@@ -318,28 +325,45 @@ impl<T: Timer, C: Connection> MidPlayer<T, C> {
         let mut buf = Vec::new();
         lyrics_file.read_to_end(&mut buf).unwrap();
 
-        let lyrics = WINDOWS_874.decode(&buf, DecoderTrap::Strict).unwrap();
+        let (text, _enc) = encoding::decode(&buf, DecoderTrap::Ignore, WINDOWS_874);
 
-        // skip the first 4 lines, then turn back into one string
-        let lyrics = lyrics.lines().skip(4).collect::<Vec<&str>>().join("\n");
+        let lyrics = match text {
+            Ok(txt) => txt,
+            Err(e) => {
+                println!("Error: {:?}", e);
+                return false;
+            }
+        };
 
-        // split the lyrics into characters
-        let mut lyrics = lyrics.chars().collect::<Vec<char>>();
+        // get the first line of the lyrics file
+        let title = lyrics.lines().next().unwrap();
+
+        println!("Playing: {}", title);
+        let author = lyrics.lines().nth(1).unwrap();
+        println!("Author: {}", author);
+
+        let key = lyrics.lines().nth(2).unwrap();
+        println!("Key: {}", key);
+
+        // let lyrics = WINDOWS_874.decode(&buf, DecoderTrap::Strict).unwrap();
+
+        let lyrics = lyrics.lines().skip(4).collect::<Vec<&str>>().join("\n").chars().collect::<Vec<char>>();
+
+        // let lyrics = lyrics.chars().collect::<Vec<char>>();
 
         // println!("{:?}", lyrics);
 
         let mut bpm: u32 = 0;
-
-        
 
         debug!("{} characters to be scrolled in lyrics file", lyrics.len());
 
         // get smpte time
         // let funny: u15 = self.timer.into();
 
-        let mut time_cache = 0_u32;
+        // let mut time_cache = 0_u32;
 
-        
+        // index cursor for each lyrics character
+        let mut lyric_index = 0_u32;
 
         for (i, moment) in sheet.iter().enumerate() {
             // cur_test(i as u16);
@@ -349,48 +373,57 @@ impl<T: Timer, C: Connection> MidPlayer<T, C> {
             // debug!("moment: {:?}", i);
 
             // debug!("res: {}", self.res as usize);
-            let a: f32 = (i as f32) / self.res as f32;
+            let time: f32 = (i as f32) / self.res as f32;
             // debug!("a: {}", a);
 
-            let mid_time = a / bpm as f32 * 60.0;
+            let mid_time = time / bpm as f32 * 60.0;
             let cur_time = (mid_time * bpm as f32 * 24.0 / 60.0) as u32;
 
             // println!("cur_time: {}", cur_time as u16);
             // debug!("mid_time: {}", mid_time);
             let time_display = cur_time;
             if t.contains(&time_display) {
-                scroll(&lyrics.remove(0).to_string());
-                scroll(&lyrics.remove(0).to_string());
+
+                // we run this twice because encoding's bit weird
+                for _ in 0..2 {
+                    if let Some(c) = lyrics.get(lyric_index as usize) {
+                        // print the character
+                        scroll(*c);
+
+                        // increment the index
+                        lyric_index += 1;
+                    }
+                }
 
                 // remove tick from t
                 let index = t.iter().position(|&r| r == time_display).unwrap();
                 t.remove(index);
 
-                if time_display != time_cache {}
+                // if time_display != time_cache {}
                 // println!("{} is in the file", cur_time as u16);
                 // time_cache = time_display;
                 // then we cache it so we don't print it again
             } /* else if t.iter().all(|f| i > *f as usize) {
-                // for the skipped times, we scroll all of them at once
-                // remove all the lesser ticks from t and scroll them
+                  // for the skipped times, we scroll all of them at once
+                  // remove all the lesser ticks from t and scroll them
 
-                let current = t.clone();
-                let to_scroll = current
-                    .iter()
-                    .filter(|f| i > **f as usize)
-                    .collect::<Vec<&u16>>();
-                info!("there are {} ticks that was skipped", to_scroll.len());
-                info!("skipped ticks: {:?}", to_scroll);
+                  let current = t.clone();
+                  let to_scroll = current
+                      .iter()
+                      .filter(|f| i > **f as usize)
+                      .collect::<Vec<&u16>>();
+                  info!("there are {} ticks that was skipped", to_scroll.len());
+                  info!("skipped ticks: {:?}", to_scroll);
 
-                for _ in 0..to_scroll.len() {
-                    let index = t.iter().position(|&r| r == *to_scroll[0]);
+                  for _ in 0..to_scroll.len() {
+                      let index = t.iter().position(|&r| r == *to_scroll[0]);
 
-                    if let Some(index) = index {
-                        scroll(&lyrics.remove(0).to_string());
-                        t.remove(index);
-                    }
-                }
-            } */
+                      if let Some(index) = index {
+                          scroll(&lyrics.remove(0).to_string());
+                          t.remove(index);
+                      }
+                  }
+              } */
 
             // else the current time is bigger than any of the times in the file
 

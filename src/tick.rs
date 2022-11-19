@@ -36,7 +36,7 @@ impl CurData {
         // for every 2 bytes, turn into a u16
         // the first byte is the BPM, so we can leave it out
 
-        let mut data = self.data.clone();
+        let data = self.data.clone();
 
         let mut ticks = Vec::new();
         // let bpm = data.remove(0);
@@ -72,12 +72,14 @@ impl CurData {
 }
 
 
-pub fn scroll(s: &str) {
-    for c in s.chars() {
-        print!("{c}");
-        std::io::stdout().flush().expect("Flushing to succeed");
-        // std::thread::sleep(std::time::Duration::from_millis(75));
-    }
+pub fn scroll(s: char) {
+    // for c in s.chars() {
+    //     print!("{c}");
+    //     std::io::stdout().flush().expect("Flushing to succeed");
+    //     // std::thread::sleep(std::time::Duration::from_millis(75));
+    // }
+    print!("{s}");
+    std::io::stdout().flush().expect("Flushing to succeed");
 }
 
 pub fn cur_test(tick: u16) {
@@ -114,9 +116,9 @@ pub fn cur_test(tick: u16) {
 
 
 
-    if t.contains(&tick) {
-        scroll(&lyrics.remove(0).to_string());
-    }
+    // if t.contains(&tick) {
+    //     scroll(&lyrics.remove(0).to_string());
+    // }
 
 
     // for i in 0..20000 {
