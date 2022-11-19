@@ -33,7 +33,7 @@ There is also an open source NCN player called [HandyKaraoke](https://github.com
 - egui for the GUI
 - RustAudio stack for audio (vst-rs, cpal, rodio, etc.)
 - ffmpeg for video decoding
-- FluidSynth for MIDI playback(?)
+- [oxisynth](https://crates.io/crates/oxisynth) for MIDI playback
 
 
 ## Extra notes
@@ -41,3 +41,11 @@ There is also an open source NCN player called [HandyKaraoke](https://github.com
 Developers are welcome and needed for help with this project.
 Audio engineering knowledge is needed for implementing the audio effects and VST plugins.
 
+
+## List of help needed
+
+- Audio playback optimization
+- GUI design and implementation with egui
+- MIDI playback controls and seeking
+- Video playback
+- Subtitle support

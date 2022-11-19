@@ -1,17 +1,31 @@
+mod tick;
+mod midi;
+
+use tick::cur_test;
+
 use std::{error::Error, fs::File, io::Read};
 
 use log::LevelFilter;
 use encoding::{all::WINDOWS_874, DecoderTrap, Encoding};
 
-fn main() {
+#[tokio::main]
+async fn main() {
     pretty_env_logger::formatted_builder()
         .filter_level(LevelFilter::Debug)
         .init();
 
-    log::debug!("debug");
-    println!("Hello, world!");
+    // log::debug!("debug");
+    // println!("Hello, world!");
 
-    println!("{}", load_lyrics().unwrap());
+    // println!("{}", load_lyrics().unwrap());
+
+    // cur_test();
+
+
+    tokio::spawn(async {
+        midi::run().await;
+    }).await.unwrap();
+    // midi::run().await;
 }
 
 
