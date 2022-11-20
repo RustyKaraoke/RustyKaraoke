@@ -6,9 +6,6 @@ use log::debug;
 // TODO: Move this to a separate crate
 use midly::Timing;
 
-pub struct MidiTick {
-    pub time: Timing,
-}
 
 pub struct CurTick {
     // each CUR character is a sequence of 2 bytes
