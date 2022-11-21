@@ -1,24 +1,93 @@
-mod tick;
-mod ncn;
 mod midi;
-use eframe::{App, run_native};
-use egui::{CentralPanel, TopBottomPanel};
+mod ncn;
+mod tick;
+mod time;
+use eframe::{run_native, App};
+use egui::{CentralPanel, Frame, RichText, SidePanel, TopBottomPanel, Ui};
 use log::LevelFilter;
+
 
 
 struct Frontend;
 
-
 impl App for Frontend {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         frame.set_window_title("RustyKaraoke");
+        // if cursor on window, print cursor position
+        if ctx.input().pointer.is_moving() {
+            let pos = ctx.input().pointer.hover_pos();
+            println!("Cursor: {:?}", pos);
+        }
+        fn sidebar_ui(ui: &mut Ui) {
+            ui.heading("Side Panel");
+            ui.label("This is a side panel");
+            ui.label("It can be used to show extra information");
+            ui.label("It can be closed by clicking the button below");
+
+            // ui.set_visible(false);
+            if ui.button("Close").clicked() {
+                // ui.close_side_panel();
+                ui.set_visible(false);
+            }
+        }
+        let mut side = SidePanel::right("side_panel").show(ctx, sidebar_ui);
         // frame.set_window_size(egui::vec2(1280.0, 720.0));
         TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            ui.heading("RustyKaraoke");
-            ui.spinner();
+            ui.horizontal(|ui| {
+                // ui.heading("RustyKaraoke");
+                ui.menu_button("File", |ui| {
+                    if ui.button("Close the menu").clicked() {
+                        ui.close_menu();
+                    }
+
+                    if ui.button("Quit").clicked() {
+                        std::process::exit(0);
+                    }
+                });
+                ui.separator();
+                ui.spacing();
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Max), |ui| {
+                        ui.label("Volume");
+                        ui.add(egui::Slider::new(&mut 0.0, 0.0..=1.0).text("Volume"));
+                        // button to toggle sidebar
+                        if ui.button("Toggle Sidebar").clicked() {
+                            // side.toggle();
+
+                            // hide sidebar
+                        }
+                    });
+                });
+                ui.button("Open");
+
+            });
+            // ui.spinner();
         });
+
+        // new window
+
+
+        // side panel as an overlay to the current ui
+
+        // button to toggle the side panel
+        egui::Window::new("Playback")
+            .fixed_size(egui::vec2(500.0, 200.0))
+            .resizable(true)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.button("Play");
+                    ui.button("Pause");
+                    ui.button("Stop");
+                });
+            });
+
         CentralPanel::default().show(ctx, |ui| {
             ui.label("Hello World!");
+            ui.code(RichText::new("aaa").code());
+            // text centered
+            ui.vertical_centered(|ui| {
+                ui.heading("RustyKaraoke");
+            });
         });
     }
 
@@ -60,7 +129,6 @@ impl App for Frontend {
     }
 
     fn post_rendering(&mut self, _window_size_px: [u32; 2], _frame: &eframe::Frame) {}
-
 }
 
 #[tokio::main]
@@ -76,11 +144,9 @@ async fn main() {
 
     // cur_test();
 
-
     // tokio::spawn(async {
     //     midi::run().await;
     // }).await.unwrap();
-
 
     // egui widget
     let native_options = eframe::NativeOptions {
