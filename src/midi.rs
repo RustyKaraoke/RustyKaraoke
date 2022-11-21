@@ -9,7 +9,7 @@ use std::{
     fs::{self, File},
     io::Read,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, atomic::AtomicUsize},
 };
 
 use midly::{
@@ -27,7 +27,7 @@ use cpal::{
 use log::{debug, error, info, trace, warn};
 use parking_lot::Mutex;
 
-use crate::tick::{cur_test, scroll, CurData};
+use crate::{tick::{cur_test, scroll, CurData}, time::Context};
 const DEFAULT_SOUNDFONT: &str = {
     if cfg!(windows) {
         r"C:\soundfonts\default.sf2"
@@ -76,7 +76,8 @@ impl fmt::Display for Error {
 }
 
 pub struct Fluid {
-    synth: Arc<Mutex<Synth>>,
+    pub synth: Arc<Mutex<Synth>>,
+    // pub context: Arc<Mutex<Context>>,
     _stream: Stream,
 }
 
@@ -164,6 +165,11 @@ impl Connection for Fluid {
     fn play(&mut self, msg: MidiEvent) -> bool {
         use nodi::midly::MidiMessage as M;
 
+        // if self.context.lock().playback.paused {
+        //     debug!("playback paused");
+        //     return false;
+        // }
+
         let mut fl = self.synth.lock();
         let c = msg.channel.as_int() as u32;
         let res = match msg.message {
@@ -239,7 +245,7 @@ impl Connection for Fluid {
     }
 }
 
-pub async fn run() {
+pub async fn run(msg: crossbeam::channel::Sender<crate::time::PlaybackEvent>, ctx: Arc<Mutex<crate::time::PlaybackContext>>) {
     let data = fs::read("44706.MID").unwrap();
     let smf = Smf::parse(&data).unwrap();
     // debug!("smf: {:?}", smf.header.timing);
@@ -273,7 +279,7 @@ pub async fn run() {
 
     // println!("pitch bend: {}", a);
 
-    let mut player = MidPlayer::new(timer, p, res);
+    let mut player = MidPlayer::new(timer, p, res, msg, ctx);
 
     // get midi ticks per second
     let res = sheet.to_vec();
@@ -289,12 +295,14 @@ pub async fn run() {
 pub struct MidPlayer<T: Timer, C: Connection> {
     pub con: C,
     pub res: u16,
+    pub msg: crossbeam::channel::Sender<crate::time::PlaybackEvent>,
+    pub ctx: Arc<Mutex<crate::time::PlaybackContext>>,
     timer: T,
 }
 
 impl<T: Timer, C: Connection> MidPlayer<T, C> {
-    pub fn new(timer: T, con: C, res: u16) -> Self {
-        Self { con, timer, res }
+    pub fn new(timer: T, con: C, res: u16, msg: crossbeam::channel::Sender<crate::time::PlaybackEvent>, ctx: Arc<Mutex<crate::time::PlaybackContext>>) -> Self {
+        Self { con, timer, res, msg, ctx }
     }
 
     pub fn set_timer(&mut self, timer: T) -> T {
@@ -334,6 +342,7 @@ impl<T: Timer, C: Connection> MidPlayer<T, C> {
                 return false;
             }
         };
+
 
         // get the first line of the lyrics file
         let title = lyrics.lines().next().unwrap();
@@ -378,6 +387,14 @@ impl<T: Timer, C: Connection> MidPlayer<T, C> {
 
             let mid_time = time / bpm as f32 * 60.0;
             let cur_time = (mid_time * bpm as f32 * 24.0 / 60.0) as u32;
+
+            // update ctx in a separate thread
+            // let mut ctx = self.ctx.lock();
+            // ctx.playback.backend = Some(crate::time::PlaybackBackend::Midi { cursor: Some(std::sync::atomic::AtomicUsize::from(cur_time as usize)) });
+
+
+            self.msg.send(crate::time::PlaybackEvent::Position(cur_time as usize)).unwrap();
+
 
             // println!("cur_time: {}", cur_time as u16);
             // debug!("mid_time: {}", mid_time);
@@ -465,7 +482,3 @@ impl<T: Timer, C: Connection> MidPlayer<T, C> {
     }
 }
 
-#[tokio::test]
-async fn test_aa() {
-    run().await;
-}

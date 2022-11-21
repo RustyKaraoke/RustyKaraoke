@@ -2,22 +2,27 @@ mod midi;
 mod ncn;
 mod tick;
 mod time;
+use std::sync::Arc;
+
 use eframe::{run_native, App};
-use egui::{CentralPanel, Frame, RichText, SidePanel, TopBottomPanel, Ui};
+use egui::{CentralPanel, Frame, RichText, SidePanel, TopBottomPanel, Ui, ImageButton};
 use log::LevelFilter;
+use parking_lot::Mutex;
+use time::{Context, PlaybackContext};
 
-
-
-struct Frontend;
+struct Frontend {
+    pub msg: crossbeam::channel::Sender<time::PlaybackEvent>,
+    pub context: Arc<Mutex<PlaybackContext>>,
+}
 
 impl App for Frontend {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         frame.set_window_title("RustyKaraoke");
         // if cursor on window, print cursor position
-        if ctx.input().pointer.is_moving() {
-            let pos = ctx.input().pointer.hover_pos();
-            println!("Cursor: {:?}", pos);
-        }
+        // if ctx.input().pointer.is_moving() {
+        //     let pos = ctx.input().pointer.hover_pos();
+        //     println!("Cursor: {:?}", pos);
+        // }
         fn sidebar_ui(ui: &mut Ui) {
             ui.heading("Side Panel");
             ui.label("This is a side panel");
@@ -30,6 +35,8 @@ impl App for Frontend {
                 ui.set_visible(false);
             }
         }
+
+
         let mut side = SidePanel::right("side_panel").show(ctx, sidebar_ui);
         // frame.set_window_size(egui::vec2(1280.0, 720.0));
         TopBottomPanel::top("top_panel").show(ctx, |ui| {
@@ -59,41 +66,83 @@ impl App for Frontend {
                     });
                 });
                 ui.button("Open");
-
             });
             // ui.spinner();
         });
-
+        
         // new window
-
-
+        
         // side panel as an overlay to the current ui
-
+        
         // button to toggle the side panel
+        let mut num = 0.5;
+
         egui::Window::new("Playback")
             .fixed_size(egui::vec2(500.0, 200.0))
             .resizable(true)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.button("Play");
-                    ui.button("Pause");
-                    ui.button("Stop");
+                    if ui.button("Play").clicked() {
+                        // run await
+                        // let c = Arc::clone(&self.context);
+                        // if context.playback.player.is_none() {
+                        //     context.playback.backend = Some(time::PlaybackBackend::Midi {
+                        //         cursor: None,
+                        //     });
+                        //     let h = tokio::spawn(async move {
+                        //         midi::run(c).await;
+                        //     });
+
+                        //     context.playback.player = Some(h);
+                        // }
+                        // await the handle but the function is not awaitable
+
+                        self.msg.send(time::PlaybackEvent::Play).unwrap();
+                    }
+                    if ui.button("Pause").clicked() {
+                        self.msg.send(time::PlaybackEvent::Pause).unwrap();
+                    }
+                    // button with icon
+                    ui.add(ImageButton::new(
+                        egui::TextureId::default(),
+                        egui::vec2(16.0, 16.0),
+                    ));
+                    if ui.button("Stop").clicked() {
+                        // let mut context = self.context.lock();
+                        self.msg.send(time::PlaybackEvent::Stop).unwrap();
+                    }
                 });
+
+
+                if ui.add(egui::Slider::new(&mut num, 0.0..=1.0).smart_aim(false).show_value(false)).changed() {
+                    // num = num
+                    self.persist_egui_memory();
+                    println!("Slider: {}", num);
+                };
             });
 
         CentralPanel::default().show(ctx, |ui| {
             ui.label("Hello World!");
             ui.code(RichText::new("aaa").code());
+            // let ctx = self.context.lock();
+            ui.code(format!("{:#?}", *self.context.lock()));
+            ui.code(format!("{:#?}", num));
             // text centered
             ui.vertical_centered(|ui| {
                 ui.heading("RustyKaraoke");
             });
         });
+        // ctx.set_debug_on_hover(true);
+
+        ctx.request_repaint();
     }
 
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {}
 
     fn on_close_event(&mut self) -> bool {
+        println!("Closing");
+        // drop(self.msg.to_owned());
+        self.msg.send(time::PlaybackEvent::Exit).unwrap();
         true
     }
 
@@ -137,18 +186,6 @@ async fn main() {
         .filter_level(LevelFilter::Debug)
         .init();
 
-    // log::debug!("debug");
-    // println!("Hello, world!");
-
-    // println!("{}", load_lyrics().unwrap());
-
-    // cur_test();
-
-    // tokio::spawn(async {
-    //     midi::run().await;
-    // }).await.unwrap();
-
-    // egui widget
     let native_options = eframe::NativeOptions {
         initial_window_size: Some(egui::vec2(1280.0, 720.0)),
         min_window_size: Some(egui::vec2(800.0, 600.0)),
@@ -157,6 +194,20 @@ async fn main() {
         ..Default::default()
     };
 
-    let app = Frontend;
+    let (tx, backrx) = crate::time::msg_send();
+
+    let app = Frontend {
+        msg: tx,
+        context: backrx,
+    };
+
+    // use funny crossbeam channel to send messages to the main thread
+    // let (tx, rx) = crossbeam::channel::bounded(1);
+
     run_native("RustyKaraoke", native_options, Box::new(|_| Box::new(app)));
+}
+
+fn init_context() -> Arc<Mutex<Context>> {
+    let context = Context::new();
+    Arc::new(Mutex::new(context))
 }

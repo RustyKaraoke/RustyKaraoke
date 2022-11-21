@@ -21,3 +21,4 @@ parking_lot = "0.12.1"
 tokio = { version = "1.22.0", features = ["full"] }
 async-trait = "0.1.58"
 chrono = "0.4.23"
+crossbeam = { version = "0.8.2", features = ["crossbeam-channel"] }
