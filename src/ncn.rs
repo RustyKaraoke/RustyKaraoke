@@ -179,7 +179,11 @@ impl NcnCursor {
     pub fn scroll(&mut self, time: u32) -> Option<&CurTick> {
         // get the MIDI time from function argument
         // then check for the last scroll that is less than or equal to the time
-        let mut ticks = self.data.iter().filter(|tick| tick.tick <= time).collect::<Vec<&CurTick>>();
+        let mut ticks = self
+            .data
+            .iter()
+            .filter(|tick| tick.tick <= time)
+            .collect::<Vec<&CurTick>>();
         ticks.sort();
 
         println!("ticks: {:?}", ticks);
@@ -206,12 +210,26 @@ impl NcnCursor {
     }
 }
 
-
 #[test]
 fn test_sort() {
-    let mut ticks = vec![CurTick::new(5), CurTick::new(4), CurTick::new(1), CurTick::new(2), CurTick::new(3)];
+    let mut ticks = vec![
+        CurTick::new(5),
+        CurTick::new(4),
+        CurTick::new(1),
+        CurTick::new(2),
+        CurTick::new(3),
+    ];
     ticks.sort();
-    assert_eq!(ticks, vec![CurTick::new(1), CurTick::new(2), CurTick::new(3), CurTick::new(4), CurTick::new(5)]);
+    assert_eq!(
+        ticks,
+        vec![
+            CurTick::new(1),
+            CurTick::new(2),
+            CurTick::new(3),
+            CurTick::new(4),
+            CurTick::new(5)
+        ]
+    );
 }
 
 #[test]

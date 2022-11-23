@@ -180,7 +180,6 @@ pub fn msg_send(
                             // midipause.0.send(()).unwrap();
                         }
                         PlaybackEvent::Play => {
-
                             // very hacky var moving code. Thanks rust
                             println!("play");
                             let mprx = mprx.clone();
@@ -188,7 +187,8 @@ pub fn msg_send(
                             let tx3 = tx3.clone();
                             let arc3 = arc3.clone();
                             std::thread::spawn(move || {
-                                let mut mid = MidiControl::new(midi.clone(), tx3.clone(), arc3.clone(), mprx);
+                                let mut mid =
+                                    MidiControl::new(midi.clone(), tx3.clone(), arc3.clone(), mprx);
                                 if let Some(back) = arc3.lock().backend.as_ref() {
                                     match back {
                                         PlaybackBackend::Midi { ctx } => {

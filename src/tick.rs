@@ -1,30 +1,29 @@
-use std::{fs::File, io::{Read, Write}};
+use std::{
+    fs::File,
+    io::{Read, Write},
+};
 
-use encoding::{all::WINDOWS_874, Encoding, DecoderTrap};
+use encoding::{all::WINDOWS_874, DecoderTrap, Encoding};
 use log::debug;
 /// MIDI Ticks for CUR and KAR timings
 // TODO: Move this to a separate crate
 use midly::Timing;
-
 
 pub struct CurTick {
     // each CUR character is a sequence of 2 bytes
     pub time: u16,
 }
 
-
 /// Raw CUR data
 pub struct CurData {
     pub data: Vec<u8>,
 }
-
 
 impl CurData {
     /// Parse raw CUR data
     pub fn read(data: Vec<u8>) -> Self {
         Self { data }
     }
-
 
     pub fn into_tick(&self) -> Vec<u16> {
         // the CUR file is a sequence of 2-byte characters
@@ -68,7 +67,6 @@ impl CurData {
     }
 }
 
-
 pub fn scroll(s: char) {
     // for c in s.chars() {
     //     print!("{c}");
@@ -78,58 +76,6 @@ pub fn scroll(s: char) {
     print!("{s}");
     std::io::stdout().flush().expect("Flushing to succeed");
 }
-
-pub fn cur_test(tick: u16) {
-    // read file
-    // let file = std::fs::read("30664.CUR").unwrap();
-    let mut file = File::open("30664.CUR").unwrap();
-
-    let mut buf = vec![];
-    // read all bytes
-    file.read_to_end(&mut buf).unwrap();
-    // parse file
-    let cur = CurData::read(buf);
-    let t = cur.into_tick();
-
-
-    // read the lyrics file, excluding the first 4 lines
-    let mut lyrics_file = File::open("30664.LYR").unwrap();
-
-    let mut buf = Vec::new();
-    lyrics_file.read_to_end(&mut buf).unwrap();
-
-    let lyrics = WINDOWS_874.decode(&buf, DecoderTrap::Strict).unwrap();
-
-    // skip the first 4 lines, then turn back into one string
-    let lyrics = lyrics.lines().skip(4).collect::<Vec<&str>>().join("\n");
-
-    // println!("{:?}", lyrics);
-
-
-    debug!("{} characters to be scrolled in lyrics file", lyrics.chars().count());
-
-
-
-    // if t.contains(&tick) {
-    //     scroll(&lyrics.remove(0).to_string());
-    // }
-
-
-    // for i in 0..20000 {
-    //     // wait for 1 millisecond
-    //     std::thread::sleep(std::time::Duration::from_millis(1));
-
-    //     // println!("milliseconds: {}", i);
-    //     // if i number is in the vector
-    //     if t.contains(&(i as u16)) {
-    //         // print the character
-    //         // println!("{}: {}", i, lyrics.remove(0));
-    //         scroll(&lyrics.remove(0).to_string());
-    //     }
-    // }
-}
-
-
 
 /// parsed CUR data
 pub struct Cur {

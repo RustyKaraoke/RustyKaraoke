@@ -29,11 +29,11 @@ use cpal::{
     Stream,
 };
 use log::{debug, error, info, trace, warn};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 
 use crate::{
-    tick::{cur_test, scroll, CurData},
-    time::{Context, PlaybackContext, PlaybackEvent},
+    tick::{scroll, CurData},
+    time::{PlaybackContext, PlaybackEvent},
 };
 const DEFAULT_SOUNDFONT: &str = {
     if cfg!(windows) {
@@ -140,7 +140,7 @@ impl MidiDisplay {
 }
 
 lazy_static! {
-    pub static ref TRACKVIEW: Arc<Mutex<MidiDisplay>> = Arc::new(Mutex::new(MidiDisplay::new()));
+    pub static ref TRACKVIEW: Arc<RwLock<MidiDisplay>> = Arc::new(RwLock::new(MidiDisplay::new()));
 }
 
 impl Fluid {
@@ -252,7 +252,7 @@ impl Connection for Fluid {
             M::NoteOff { key, .. } => {
                 trace!("note off: {} {}", c, key);
                 TRACKVIEW
-                    .lock()
+                    .write()
                     .note_off(u8::from(key), c as u8, c as usize);
                 fl.send_event(oxisynth::MidiEvent::NoteOff {
                     channel: c as u8,
@@ -264,11 +264,11 @@ impl Connection for Fluid {
 
                 if u8::from(vel) == 0 {
                     TRACKVIEW
-                        .lock()
+                        .write()
                         .note_off(u8::from(key), c as u8, c as usize);
                 } else {
                     TRACKVIEW
-                        .lock()
+                        .write()
                         .note_on(u8::from(key), u8::from(vel), c as u8, c as usize);
                 }
                 fl.send_event(oxisynth::MidiEvent::NoteOn {
@@ -594,60 +594,65 @@ impl<T: Timer> MidPlayer<T> {
     pub fn play(&mut self, sheet: &[Moment]) -> bool {
         let mut counter = 0_u32;
 
+        //
+        // The lyrics player will now be disabled for a while until I rewrite the player
+        //
+        //
+
         // read file
         // let file = std::fs::read("30664.CUR").unwrap();
-        let mut file = File::open("44706.CUR").unwrap();
+        // let mut file = File::open("44706.CUR").unwrap();
 
-        let mut buf = vec![];
+        // let mut buf = vec![];
 
         self.ctx.lock().backend = Some(crate::time::PlaybackBackend::Midi {
             ctx: self.midi_context.clone(),
         });
 
         // read all bytes
-        file.read_to_end(&mut buf).unwrap();
+        // file.read_to_end(&mut buf).unwrap();
         // parse file
-        let cur = CurData::read(buf);
-        let mut t = cur
-            .into_tick()
-            .iter()
-            .map(|x| *x as u32)
-            .collect::<Vec<_>>();
+        // let cur = CurData::read(buf);
+        // let mut t = cur
+        //     .into_tick()
+        //     .iter()
+        //     .map(|x| *x as u32)
+        //     .collect::<Vec<_>>();
 
         // read the lyrics file, excluding the first 4 lines
-        let mut lyrics_file = File::open("44706.LYR").unwrap();
+        // let mut lyrics_file = File::open("44706.LYR").unwrap();
 
-        let mut buf = Vec::new();
-        lyrics_file.read_to_end(&mut buf).unwrap();
+        // let mut buf = Vec::new();
+        // lyrics_file.read_to_end(&mut buf).unwrap();
 
-        let (text, _enc) = encoding::decode(&buf, DecoderTrap::Ignore, WINDOWS_874);
+        // let (text, _enc) = encoding::decode(&buf, DecoderTrap::Ignore, WINDOWS_874);
 
-        let lyrics = match text {
-            Ok(txt) => txt,
-            Err(e) => {
-                println!("Error: {:?}", e);
-                return false;
-            }
-        };
+        // let lyrics = match text {
+        //     Ok(txt) => txt,
+        //     Err(e) => {
+        //         println!("Error: {:?}", e);
+        //         return false;
+        //     }
+        // };
         // get the first line of the lyrics file
-        let title = lyrics.lines().next().unwrap();
+        // let title = lyrics.lines().next().unwrap();
 
-        println!("Playing: {}", title);
-        let author = lyrics.lines().nth(1).unwrap();
-        println!("Author: {}", author);
+        // println!("Playing: {}", title);
+        // let author = lyrics.lines().nth(1).unwrap();
+        // println!("Author: {}", author);
 
-        let key = lyrics.lines().nth(2).unwrap();
-        println!("Key: {}", key);
+        // let key = lyrics.lines().nth(2).unwrap();
+        // println!("Key: {}", key);
 
-        // let lyrics = WINDOWS_874.decode(&buf, DecoderTrap::Strict).unwrap();
+        // // let lyrics = WINDOWS_874.decode(&buf, DecoderTrap::Strict).unwrap();
 
-        let lyrics = lyrics
-            .lines()
-            .skip(4)
-            .collect::<Vec<&str>>()
-            .join("\n")
-            .chars()
-            .collect::<Vec<char>>();
+        // let lyrics = lyrics
+        //     .lines()
+        //     .skip(4)
+        //     .collect::<Vec<&str>>()
+        //     .join("\n")
+        //     .chars()
+        //     .collect::<Vec<char>>();
 
         // let lyrics = lyrics.chars().collect::<Vec<char>>();
 
@@ -655,7 +660,7 @@ impl<T: Timer> MidPlayer<T> {
 
         let mut bpm: u32 = 0;
 
-        debug!("{} characters to be scrolled in lyrics file", lyrics.len());
+        // debug!("{} characters to be scrolled in lyrics file", lyrics.len());
 
         // get smpte time
         // let funny: u15 = self.timer.into();
@@ -663,7 +668,7 @@ impl<T: Timer> MidPlayer<T> {
         // let mut time_cache = 0_u32;
 
         // index cursor for each lyrics character
-        let mut lyric_index = 0_u32;
+        // let mut lyric_index = 0_u32;
         self.midi_context.lock().midi_tick_max = Some(sheet.len());
 
         // todo: rewrite this player code so users can scroll it
@@ -696,47 +701,48 @@ impl<T: Timer> MidPlayer<T> {
             // println!("cur_time: {}", cur_time as u16);
             // debug!("mid_time: {}", mid_time);
             let time_display = cur_time;
-            if t.contains(&time_display) {
-                // we run this twice because encoding's bit weird
-                for _ in 0..2 {
-                    if let Some(c) = lyrics.get(lyric_index as usize) {
-                        // print the character
-                        scroll(*c);
+            // if t.contains(&time_display) {
+            //     // we run this twice because encoding's bit weird
+            //     for _ in 0..2 {
+            //         if let Some(c) = lyrics.get(lyric_index as usize) {
+            //             // print the character
+            //             scroll(*c);
 
-                        // increment the index
-                        lyric_index += 1;
+            //             // increment the index
+            //             lyric_index += 1;
+            //         }
+            //     }
+
+            //     // remove tick from t
+            //     let index = t.iter().position(|&r| r == time_display).unwrap();
+            //     t.remove(index);
+
+            //     // if time_display != time_cache {}
+            //     // println!("{} is in the file", cur_time as u16);
+            //     // time_cache = time_display;
+            //     // then we cache it so we don't print it again
+            // }
+            /* else if t.iter().all(|f| i > *f as usize) {
+                // for the skipped times, we scroll all of them at once
+                // remove all the lesser ticks from t and scroll them
+
+                let current = t.clone();
+                let to_scroll = current
+                    .iter()
+                    .filter(|f| i > **f as usize)
+                    .collect::<Vec<&u16>>();
+                info!("there are {} ticks that was skipped", to_scroll.len());
+                info!("skipped ticks: {:?}", to_scroll);
+
+                for _ in 0..to_scroll.len() {
+                    let index = t.iter().position(|&r| r == *to_scroll[0]);
+
+                    if let Some(index) = index {
+                        scroll(&lyrics.remove(0).to_string());
+                        t.remove(index);
                     }
                 }
-
-                // remove tick from t
-                let index = t.iter().position(|&r| r == time_display).unwrap();
-                t.remove(index);
-
-                // if time_display != time_cache {}
-                // println!("{} is in the file", cur_time as u16);
-                // time_cache = time_display;
-                // then we cache it so we don't print it again
-            } /* else if t.iter().all(|f| i > *f as usize) {
-                  // for the skipped times, we scroll all of them at once
-                  // remove all the lesser ticks from t and scroll them
-
-                  let current = t.clone();
-                  let to_scroll = current
-                      .iter()
-                      .filter(|f| i > **f as usize)
-                      .collect::<Vec<&u16>>();
-                  info!("there are {} ticks that was skipped", to_scroll.len());
-                  info!("skipped ticks: {:?}", to_scroll);
-
-                  for _ in 0..to_scroll.len() {
-                      let index = t.iter().position(|&r| r == *to_scroll[0]);
-
-                      if let Some(index) = index {
-                          scroll(&lyrics.remove(0).to_string());
-                          t.remove(index);
-                      }
-                  }
-              } */
+            } */
 
             // else the current time is bigger than any of the times in the file
 
@@ -790,7 +796,6 @@ pub enum MidiMessage {
     Event(MidiEvent),
     ClearNotes,
     Soundfont(PathBuf),
-
 }
 
 pub enum MidiSynth {

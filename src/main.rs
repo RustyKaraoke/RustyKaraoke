@@ -3,16 +3,19 @@ mod ncn;
 mod tick;
 mod time;
 mod ui;
-use std::{sync::Arc, thread, env};
+use std::{env, sync::Arc, thread};
 
 use chrono::Duration;
 use eframe::{run_native, App};
 use egui::{CentralPanel, Frame, ImageButton, RichText, ScrollArea, SidePanel, TopBottomPanel, Ui};
 use hhmmss::Hhmmss;
 use log::{debug, LevelFilter};
-use midly::{num::{u4, u7}, MidiMessage};
+use midly::{
+    num::{u4, u7},
+    MidiMessage,
+};
 use nodi::MidiEvent;
-use parking_lot::{Mutex, deadlock};
+use parking_lot::{deadlock, Mutex};
 use time::{Context, PlaybackContext};
 
 struct Frontend {
@@ -77,19 +80,17 @@ impl App for Frontend {
         });
 
         egui::Window::new("MIDI Debug").show(ctx, |ui| {
-            let view = &*crate::midi::TRACKVIEW.lock();
+            let view = &*crate::midi::TRACKVIEW.read();
             // scrollarea
             egui::ScrollArea::vertical().show(ui, |ui| {
                 // Add a lot of widgets here.
                 // ui.code(format!("{:#?}", view));
 
-
-                // ui.add(crate::ui::piano::Piano { state: view.tracks[0].clone() })
-                for (i, track) in view.tracks.iter().enumerate() {
-                    ui.label(format!("{:?}", i));
-                    ui.add(crate::ui::piano::Piano { state: track.clone() });
-                    // ui.label(format!("{:#?}", i));
-                }
+                // currently disabled due to performance issues
+                // for (i, track) in view.tracks.iter().enumerate() {
+                //     ui.label(format!("{:?}", i));
+                //     ui.add(crate::ui::piano::Piano { state: track.clone() });
+                // }
             });
         });
         // new window
@@ -125,14 +126,26 @@ impl App for Frontend {
                         self.mptx.send(()).unwrap();
                     }
                     // button with icon
-                    if ui.add(ImageButton::new(
-                        egui::TextureId::default(),
-                        egui::vec2(16.0, 16.0),
-                    )).clicked() {
-                        self.midi.send(midi::MidiMessage::Event(MidiEvent { channel: u4::from(1), message: MidiMessage::NoteOn { key: {
-                            let raw = 44;
-                          u7::from_int_lossy(raw)
-                        }, vel: u7::from(100) } })).unwrap();
+                    if ui
+                        .add(ImageButton::new(
+                            egui::TextureId::default(),
+                            egui::vec2(16.0, 16.0),
+                        ))
+                        .clicked()
+                    {
+                        // debug!("Clicked");
+                        self.midi
+                            .send(midi::MidiMessage::Event(MidiEvent {
+                                channel: u4::from(1),
+                                message: MidiMessage::NoteOn {
+                                    key: {
+                                        let raw = 44;
+                                        u7::from_int_lossy(raw)
+                                    },
+                                    vel: u7::from(100),
+                                },
+                            }))
+                            .unwrap();
                     }
                     if ui.button("Stop").clicked() {
                         // let mut context = self.context.lock();
@@ -242,20 +255,23 @@ impl App for Frontend {
     fn post_rendering(&mut self, _window_size_px: [u32; 2], _frame: &eframe::Frame) {}
 }
 
+// todo: import nannou and use it to render the midi notes
+
 #[tokio::main]
 async fn main() {
-
     // println!("{:?}", env::var("RUST_LOG"));
     pretty_env_logger::formatted_builder()
-    .parse_filters(env::var("RUST_LOG").unwrap_or_else(|_| "debug".to_string()).as_str())
-    // .filter_level(LevelFilter::Debug)
+        .parse_filters(
+            env::var("RUST_LOG")
+                .unwrap_or_else(|_| "debug".to_string())
+                .as_str(),
+        )
+        // .filter_level(LevelFilter::Debug)
         .init();
 
     let (mtx, rx) = crossbeam::channel::unbounded();
 
-    tokio::spawn(async move {
-        crate::midi::midi_thread(rx, None)
-    });
+    tokio::spawn(async move { crate::midi::midi_thread(rx, None) });
 
     thread::spawn(move || loop {
         thread::sleep(Duration::seconds(1).to_std().unwrap());

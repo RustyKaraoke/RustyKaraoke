@@ -19,7 +19,6 @@ impl Widget for Piano {
 
         // ui.
 
-
         // let r = ui.allocate_response(egui::vec2(1000.0, 200.0), egui::Sense::hover());
         ui.horizontal(|ui| {
             // vertical spacing between keys should be 0
@@ -28,8 +27,8 @@ impl Widget for Piano {
             ui.spacing_mut().item_spacing.x = 1.0;
             ui.spacing_mut().item_spacing.y = 1.0;
             for i in 0..88 {
-
-                let rect = ui.allocate_response(egui::vec2(5.0, 50.0), egui::Sense::click_and_drag());
+                let rect =
+                    ui.allocate_response(egui::vec2(5.0, 50.0), egui::Sense::click_and_drag());
 
                 let key = state.notes.iter().find(|n| n.note == i);
                 // 0 spacing between rects
@@ -45,10 +44,10 @@ impl Widget for Piano {
                     fill: color,
                     stroke: egui::Stroke::none(),
                 });
-
             }
             // let's allocate a space for a key
-        }).response
+        })
+        .response
         // egui::widgets::Button::new("test").ui(ui);
     }
 }
