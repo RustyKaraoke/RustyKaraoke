@@ -103,13 +103,10 @@ pub fn cur_test(tick: u16) {
     // skip the first 4 lines, then turn back into one string
     let lyrics = lyrics.lines().skip(4).collect::<Vec<&str>>().join("\n");
 
-    // split the lyrics into characters
-    let mut lyrics = lyrics.chars().collect::<Vec<char>>();
-
     // println!("{:?}", lyrics);
 
 
-    debug!("{} characters to be scrolled in lyrics file", lyrics.len());
+    debug!("{} characters to be scrolled in lyrics file", lyrics.chars().count());
 
 
 

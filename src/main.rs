@@ -2,17 +2,24 @@ mod midi;
 mod ncn;
 mod tick;
 mod time;
-use std::sync::Arc;
+mod ui;
+use std::{sync::Arc, thread, env};
 
+use chrono::Duration;
 use eframe::{run_native, App};
-use egui::{CentralPanel, Frame, RichText, SidePanel, TopBottomPanel, Ui, ImageButton};
-use log::LevelFilter;
-use parking_lot::Mutex;
+use egui::{CentralPanel, Frame, ImageButton, RichText, ScrollArea, SidePanel, TopBottomPanel, Ui};
+use hhmmss::Hhmmss;
+use log::{debug, LevelFilter};
+use midly::{num::{u4, u7}, MidiMessage};
+use nodi::MidiEvent;
+use parking_lot::{Mutex, deadlock};
 use time::{Context, PlaybackContext};
 
 struct Frontend {
     pub msg: crossbeam::channel::Sender<time::PlaybackEvent>,
     pub context: Arc<Mutex<PlaybackContext>>,
+    pub mptx: crossbeam::channel::Sender<()>,
+    pub midi: crossbeam::channel::Sender<midi::MidiMessage>,
 }
 
 impl App for Frontend {
@@ -35,7 +42,6 @@ impl App for Frontend {
                 ui.set_visible(false);
             }
         }
-
 
         let mut side = SidePanel::right("side_panel").show(ctx, sidebar_ui);
         // frame.set_window_size(egui::vec2(1280.0, 720.0));
@@ -69,13 +75,28 @@ impl App for Frontend {
             });
             // ui.spinner();
         });
-        
+
+        egui::Window::new("MIDI Debug").show(ctx, |ui| {
+            let view = &*crate::midi::TRACKVIEW.lock();
+            // scrollarea
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                // Add a lot of widgets here.
+                // ui.code(format!("{:#?}", view));
+
+
+                // ui.add(crate::ui::piano::Piano { state: view.tracks[0].clone() })
+                for (i, track) in view.tracks.iter().enumerate() {
+                    ui.label(format!("{:?}", i));
+                    ui.add(crate::ui::piano::Piano { state: track.clone() });
+                    // ui.label(format!("{:#?}", i));
+                }
+            });
+        });
         // new window
-        
+
         // side panel as an overlay to the current ui
-        
+
         // button to toggle the side panel
-        let mut num = 0.5;
 
         egui::Window::new("Playback")
             .fixed_size(egui::vec2(500.0, 200.0))
@@ -100,25 +121,66 @@ impl App for Frontend {
                         self.msg.send(time::PlaybackEvent::Play).unwrap();
                     }
                     if ui.button("Pause").clicked() {
-                        self.msg.send(time::PlaybackEvent::Pause).unwrap();
+                        // self.msg.send(time::PlaybackEvent::Pause).unwrap();
+                        self.mptx.send(()).unwrap();
                     }
                     // button with icon
-                    ui.add(ImageButton::new(
+                    if ui.add(ImageButton::new(
                         egui::TextureId::default(),
                         egui::vec2(16.0, 16.0),
-                    ));
+                    )).clicked() {
+                        self.midi.send(midi::MidiMessage::Event(MidiEvent { channel: u4::from(1), message: MidiMessage::NoteOn { key: {
+                            let raw = 44;
+                          u7::from_int_lossy(raw)
+                        }, vel: u7::from(100) } })).unwrap();
+                    }
                     if ui.button("Stop").clicked() {
                         // let mut context = self.context.lock();
                         self.msg.send(time::PlaybackEvent::Stop).unwrap();
                     }
                 });
 
+                ui.horizontal(|ui| {
+                    let default = "00:00:00 / 00:00:00".to_string();
 
-                if ui.add(egui::Slider::new(&mut num, 0.0..=1.0).smart_aim(false).show_value(false)).changed() {
-                    // num = num
-                    self.persist_egui_memory();
-                    println!("Slider: {}", num);
-                };
+                    // i need a better way to do this.
+                    // this is yandere dev level of spaghetti code
+
+                    let time_txt = if let Some(backend) = &self.context.lock().backend {
+                        if let Some(time) = backend.get_time() {
+                            time
+                        } else {
+                            default
+                        }
+                    } else {
+                        default
+                    };
+                    ui.label(&time_txt);
+                    // let context = self.context.lock().backend.as_ref().unwrap();
+
+                    let (elapsed, total) = self
+                        .context
+                        .lock()
+                        .backend
+                        .as_ref()
+                        .unwrap_or(&time::PlaybackBackend::Audio)
+                        .get_position();
+                    //
+
+                    let mut time = elapsed as f64;
+
+                    let slider = ui.add(
+                        egui::Slider::new(&mut time, 0.0..=total as f64)
+                            .text(&time_txt)
+                            .show_value(false),
+                    );
+                    if slider.dragged() {
+                        // get value
+                        debug!("time: {}", time);
+                        let backend = self.context.lock().backend.as_ref().unwrap().get_backend();
+                        backend.lock().midi_tick = Some(time as usize);
+                    }
+                });
             });
 
         CentralPanel::default().show(ctx, |ui| {
@@ -126,7 +188,6 @@ impl App for Frontend {
             ui.code(RichText::new("aaa").code());
             // let ctx = self.context.lock();
             ui.code(format!("{:#?}", *self.context.lock()));
-            ui.code(format!("{:#?}", num));
             // text centered
             ui.vertical_centered(|ui| {
                 ui.heading("RustyKaraoke");
@@ -141,8 +202,9 @@ impl App for Frontend {
 
     fn on_close_event(&mut self) -> bool {
         println!("Closing");
+        self.msg.send(time::PlaybackEvent::Stop).unwrap();
         // drop(self.msg.to_owned());
-        self.msg.send(time::PlaybackEvent::Exit).unwrap();
+        self.msg.send(time::PlaybackEvent::Exit).unwrap_or_default();
         true
     }
 
@@ -182,9 +244,36 @@ impl App for Frontend {
 
 #[tokio::main]
 async fn main() {
+
+    // println!("{:?}", env::var("RUST_LOG"));
     pretty_env_logger::formatted_builder()
-        .filter_level(LevelFilter::Debug)
+    .parse_filters(env::var("RUST_LOG").unwrap_or_else(|_| "debug".to_string()).as_str())
+    // .filter_level(LevelFilter::Debug)
         .init();
+
+    let (mtx, rx) = crossbeam::channel::unbounded();
+
+    tokio::spawn(async move {
+        crate::midi::midi_thread(rx, None)
+    });
+
+    thread::spawn(move || loop {
+        thread::sleep(Duration::seconds(1).to_std().unwrap());
+        // debug!("tick");
+        let deadlocks = deadlock::check_deadlock();
+        if deadlocks.is_empty() {
+            continue;
+        }
+
+        println!("{} deadlocks detected", deadlocks.len());
+        for (i, threads) in deadlocks.iter().enumerate() {
+            println!("Deadlock #{}", i);
+            for t in threads {
+                println!("Thread Id {:#?}", t.thread_id());
+                println!("{:#?}", t.backtrace());
+            }
+        }
+    });
 
     let native_options = eframe::NativeOptions {
         initial_window_size: Some(egui::vec2(1280.0, 720.0)),
@@ -194,11 +283,13 @@ async fn main() {
         ..Default::default()
     };
 
-    let (tx, backrx) = crate::time::msg_send();
+    let (tx, backrx, mptx) = crate::time::msg_send(mtx.clone());
 
     let app = Frontend {
         msg: tx,
         context: backrx,
+        mptx,
+        midi: mtx,
     };
 
     // use funny crossbeam channel to send messages to the main thread

@@ -1,7 +1,12 @@
+use anyhow::{anyhow, Result};
+use chrono::Duration;
+use crossbeam::channel::{Receiver, Sender};
+use derivative::Derivative;
 use encoding::{
     all::{UTF_8, WINDOWS_874},
     DecoderTrap, Encoding,
 };
+use lazy_static::lazy_static;
 use oxisynth::{Settings, SoundFont, Synth, SynthDescriptor};
 /// MIDI player code
 use std::{
@@ -9,25 +14,27 @@ use std::{
     fs::{self, File},
     io::Read,
     path::{Path, PathBuf},
-    sync::{Arc, atomic::AtomicUsize},
+    sync::Arc,
 };
 
-use midly::{
-    live::SystemRealtime,
-    num::{u15, u7},
-    Format, Smf,
+use midly::{live::SystemRealtime, Format, Smf, Timing};
+use nodi::{
+    timers::{Ticker, TimeFormatError},
+    Connection, Event, MidiEvent, Moment, Sheet, Timer,
 };
-use nodi::{timers::Ticker, Connection, Event, MidiEvent, Moment, Player, Sheet, Timer};
 
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
-    BufferSize, BuildStreamError, DefaultStreamConfigError, OutputCallbackInfo, PlayStreamError,
-    SampleFormat, Stream,
+    BuildStreamError, DefaultStreamConfigError, OutputCallbackInfo, PlayStreamError, SampleFormat,
+    Stream,
 };
 use log::{debug, error, info, trace, warn};
 use parking_lot::Mutex;
 
-use crate::{tick::{cur_test, scroll, CurData}, time::Context};
+use crate::{
+    tick::{cur_test, scroll, CurData},
+    time::{Context, PlaybackContext, PlaybackEvent},
+};
 const DEFAULT_SOUNDFONT: &str = {
     if cfg!(windows) {
         r"C:\soundfonts\default.sf2"
@@ -77,8 +84,63 @@ impl fmt::Display for Error {
 
 pub struct Fluid {
     pub synth: Arc<Mutex<Synth>>,
-    // pub context: Arc<Mutex<Context>>,
+    // pub context: Arc<Mutex<MidiContext>>,
     _stream: Stream,
+}
+
+// MIDI display for debugging and stuff
+#[derive(Debug, Clone, Copy, Ord, PartialEq, PartialOrd, Eq)]
+pub struct Note {
+    pub note: u8,
+    pub velocity: u8,
+    pub channel: u8,
+}
+#[derive(Debug, Clone, Ord, PartialEq, PartialOrd, Eq)]
+pub struct Track {
+    pub notes: Vec<Note>,
+}
+#[derive(Debug, Clone, Ord, PartialEq, PartialOrd, Eq)]
+pub struct MidiDisplay {
+    pub tracks: Vec<Track>,
+}
+
+impl MidiDisplay {
+    pub fn new() -> Self {
+        // vector with 16 tracks
+        let mut tracks = Vec::with_capacity(16);
+
+        for _ in 0..16 {
+            tracks.push(Track { notes: Vec::new() });
+        }
+
+        Self { tracks }
+    }
+
+    pub fn note_on(&mut self, note: u8, velocity: u8, channel: u8, track: usize) {
+        let track = self.tracks.get_mut(track).unwrap();
+        track.notes.push(Note {
+            note,
+            velocity,
+            channel,
+        });
+    }
+
+    pub fn note_off(&mut self, note: u8, channel: u8, track: usize) {
+        // debug!("note off: {} {}", note, channel);
+        let track = self.tracks.get_mut(track).unwrap();
+        let note = track
+            .notes
+            .iter()
+            .position(|n| n.note == note && n.channel == channel)
+            .unwrap();
+
+        // debug!("note off: {}", note);
+        track.notes.remove(note);
+    }
+}
+
+lazy_static! {
+    pub static ref TRACKVIEW: Arc<Mutex<MidiDisplay>> = Arc::new(Mutex::new(MidiDisplay::new()));
 }
 
 impl Fluid {
@@ -118,6 +180,7 @@ impl Fluid {
                     .build_output_stream(
                         &config,
                         move |data: &mut [f32], _: &OutputCallbackInfo| {
+                            // debug!("{:?}", data);
                             fl.lock().write(data);
                         },
                         err_fn,
@@ -157,7 +220,17 @@ impl Fluid {
         Ok(Self {
             synth: Arc::clone(&synth),
             _stream: stream,
+            // context: ctx,
         })
+    }
+    pub fn add_soundfont<P: AsRef<Path>>(&mut self, sf: P) -> Result<(), Error> {
+        let mut fl = self.synth.lock();
+        // fl.reset();
+        let mut file = File::open(sf.as_ref()).unwrap();
+        let font = SoundFont::load(&mut file).unwrap();
+        info!("Loading soundfont {}", sf.as_ref().display());
+        fl.add_font(font, true);
+        Ok(())
     }
 }
 
@@ -165,17 +238,22 @@ impl Connection for Fluid {
     fn play(&mut self, msg: MidiEvent) -> bool {
         use nodi::midly::MidiMessage as M;
 
-        // if self.context.lock().playback.paused {
-        //     debug!("playback paused");
+        // println!("MIDI: {:?}", msg);
+
+        // if !self.context.lock().playing {
+        //     debug!("playback stopped");
         //     return false;
         // }
 
+        // ???????? NOTE OFF IS NOTEON WITH 0 VELOCITY???? WHAT
         let mut fl = self.synth.lock();
         let c = msg.channel.as_int() as u32;
         let res = match msg.message {
             M::NoteOff { key, .. } => {
                 trace!("note off: {} {}", c, key);
-
+                TRACKVIEW
+                    .lock()
+                    .note_off(u8::from(key), c as u8, c as usize);
                 fl.send_event(oxisynth::MidiEvent::NoteOff {
                     channel: c as u8,
                     key: u8::from(key),
@@ -183,6 +261,16 @@ impl Connection for Fluid {
             }
             M::NoteOn { key, vel } => {
                 trace!("note on: {} {} {}", c, key, vel);
+
+                if u8::from(vel) == 0 {
+                    TRACKVIEW
+                        .lock()
+                        .note_off(u8::from(key), c as u8, c as usize);
+                } else {
+                    TRACKVIEW
+                        .lock()
+                        .note_on(u8::from(key), u8::from(vel), c as u8, c as usize);
+                }
                 fl.send_event(oxisynth::MidiEvent::NoteOn {
                     channel: c as u8,
                     key: u8::from(key),
@@ -235,74 +323,268 @@ impl Connection for Fluid {
     }
 
     fn send_sys_rt(&mut self, msg: SystemRealtime) {
-        // if msg == SystemRealtime::Reset {
-        // 	if let Err(e) = self.synth.lock().unwrap().program_reset() {
-        // 		log::error!(target: "midi_event", "failed to reset: {e}");
-        // 	}
-        // }
-        self.all_notes_off();
-        self.synth.lock().program_reset();
+        if msg == SystemRealtime::Reset {
+            self.all_notes_off();
+            self.synth.lock().program_reset();
+        }
     }
 }
 
-pub async fn run(msg: crossbeam::channel::Sender<crate::time::PlaybackEvent>, ctx: Arc<Mutex<crate::time::PlaybackContext>>) {
-    let data = fs::read("44706.MID").unwrap();
-    let smf = Smf::parse(&data).unwrap();
-    // debug!("smf: {:?}", smf.header.timing);
-
-    let (timer, res) = {
-        // let timer =
-        let timer = Ticker::try_from(smf.header.timing).unwrap();
-        let res = match smf.header.timing {
-            midly::Timing::Metrical(i) => u16::from(i),
-            midly::Timing::Timecode(fps, i) => fps.as_int() as u16 * i as u16, //FIXME
-        };
-        (timer, res)
-    };
-
-    // turn header.timing into SMPTE
-    // let tempo = timer.clone().sleep_duration(1);
-
-    // debug!("tempo: {:?}", tempo);
-    // get tempo from smf
-    // let t = timer.sleep_duration(1);
-
-    let sheet = match smf.header.format {
-        Format::SingleTrack | Format::Sequential => Sheet::sequential(&smf.tracks),
-        Format::Parallel => Sheet::parallel(&smf.tracks),
-    };
-
-    println!("format: {:?}", sheet.len() as u16);
-
-    let p = Fluid::new(DEFAULT_SOUNDFONT).unwrap();
-    // let a = p.synth.lock().get_pitch_bend(0).unwrap();
-
-    // println!("pitch bend: {}", a);
-
-    let mut player = MidPlayer::new(timer, p, res, msg, ctx);
-
-    // get midi ticks per second
-    let res = sheet.to_vec();
-    debug!("res: {:?}", res.len());
-    player.play(&sheet);
-
-    // get midi resolution of sheet
-
-    // println!("{:#?}", sheet);
-    // println!("{:?}", timer);
+#[derive(Derivative)]
+#[derivative(Debug, Clone, Default)]
+pub struct MidiContext {
+    pub playing: bool,
+    pub midi_tick: Option<usize>,
+    pub midi_tick_max: Option<usize>,
+    pub total: Option<Duration>,
+    pub elapsed: Option<Duration>,
 }
+
+impl MidiContext {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    // go up the tree and get the midi control
+
+    pub fn stop(&mut self) {
+        self.playing = false;
+        self.midi_tick = Some(0);
+        self.elapsed = Some(Duration::zero());
+    }
+
+    pub fn start(&mut self) {
+        self.playing = true;
+    }
+
+    pub fn pause(&mut self) {
+        self.playing = false;
+    }
+}
+
+/// A [Timer] that lets you toggle playback.
+///
+/// This type works exactly like [Ticker], but it checks for messages
+/// on a [Receiver] and toggles playback if there is one.
+///
+/// Sending a message to [self.pause] will pause the thread until another
+/// message is received.
+///
+/// # Notes
+/// Using [Ticker] is recommended over this, mainly because there is the
+/// overhead of [Receiver] with this type.
+///
+/// Calling [sleep](Self::sleep) will panic if the corresponding end of the
+/// receiver is poisoned, see the [mpsc](std::sync::mpsc) documentation for
+/// more.
+#[derive(Debug)]
+pub struct ControlTicker {
+    pub ticks_per_beat: u16,
+    pub micros_per_tick: f64,
+    /// Speed modifier, a value of `1.0` is the default and affects nothing.
+    ///
+    /// Important: Do not set to 0.0, this value is used as a denominator.
+    pub speed: f32,
+    /// Messages to this channel will toggle playback.
+    pub pause: Receiver<()>,
+}
+
+impl ControlTicker {
+    /// Creates an instance of [Self] with the given ticks-per-beat.
+    /// The tempo will be infinitely rapid, meaning no sleeps will happen.
+    /// However this is rarely an issue since a tempo change message will set
+    /// it, and this usually happens before any non-0 offset event.
+    pub fn new(ticks_per_beat: u16, pause: Receiver<()>) -> Self {
+        Self {
+            ticks_per_beat,
+            pause,
+            micros_per_tick: 0.0,
+            speed: 1.0,
+        }
+    }
+
+    /// Will create an instance of [Self] with a provided tempo.
+    pub fn with_initial_tempo(ticks_per_beat: u16, tempo: u32, pause: Receiver<()>) -> Self {
+        let mut s = Self::new(ticks_per_beat, pause);
+        s.change_tempo(tempo);
+        s
+    }
+
+    ///// Casts `self` to a [Ticker].
+    // pub fn to_ticker(&self) -> Ticker {
+    //     Ticker {
+    //         ticks_per_beat: self.ticks_per_beat,
+    //         micros_per_tick: self.micros_per_tick,
+    //         speed: self.speed,
+    //     }
+    // }
+}
+
+impl Timer for ControlTicker {
+    fn change_tempo(&mut self, tempo: u32) {
+        let micros_per_tick = tempo as f64 / self.ticks_per_beat as f64;
+        self.micros_per_tick = micros_per_tick;
+    }
+
+    fn sleep_duration(&mut self, n_ticks: u32) -> std::time::Duration {
+        let t = self.micros_per_tick * n_ticks as f64 / self.speed as f64;
+        if t > 0.0 {
+            std::time::Duration::from_micros(t as u64)
+        } else {
+            std::time::Duration::default()
+        }
+    }
+
+    /// Same with [Ticker::sleep], except it checks if there are any messages on
+    /// [self.pause], if there is a message, waits for another one before
+    /// continuing with the sleep.
+    fn sleep(&mut self, n_ticks: u32) {
+        //BUG: egui Deadlock when pausing
+        // Check if we're supposed to be paused.
+        if self.pause.try_recv().is_ok() {
+            // Wait for the next message in order to continue, continue.
+            // self.pause.recv().unwrap();
+            debug!("paused");
+            self.pause
+                .recv()
+                .unwrap_or_else(|e| panic!("Ticker: pause channel receive failed: {:?}", e));
+        }
+
+        trace!(target: "rusty_karaoke::midi::ControlTicker","sleeping for {} ticks", n_ticks);
+        let t = self.sleep_duration(n_ticks);
+
+        if !t.is_zero() {
+            nodi::timers::sleep(t);
+        }
+    }
+}
+
+fn timing_to_ticker(timing: Timing) -> u16 {
+    match timing {
+        Timing::Metrical(n) => u16::from(n),
+        _ => panic!("Timing must be metrical"),
+    }
+}
+#[derive(Derivative)]
+#[derivative(Debug, Clone)]
+pub struct MidiControl {
+    pub midi_channel: Sender<MidiMessage>,
+    pub midi_context: Arc<Mutex<MidiContext>>,
+    pub midi: Option<Vec<u8>>,
+    pub sheet: Option<Sheet>,
+    pub midi_sender: Sender<PlaybackEvent>,
+    pub playback_context: Arc<Mutex<PlaybackContext>>,
+    pub sigrecv: Receiver<()>,
+}
+
+impl MidiControl {
+    pub fn new(
+        midi_channel: Sender<MidiMessage>,
+        msg: crossbeam::channel::Sender<crate::time::PlaybackEvent>,
+        ctx: Arc<Mutex<crate::time::PlaybackContext>>,
+        rx: Receiver<()>,
+    ) -> Self {
+        let midicon = Arc::new(Mutex::new(MidiContext::new()));
+        Self {
+            midi_channel,
+            midi_context: midicon,
+            midi: None,
+            sheet: None,
+            midi_sender: msg,
+            playback_context: ctx,
+            sigrecv: rx,
+        }
+    }
+
+    pub fn set_context(&mut self, ctx: Arc<Mutex<PlaybackContext>>) {
+        self.playback_context = ctx;
+    }
+
+    //todo: async
+    //BUG: the song just perpetually stops if you try to play it again after stopping it
+    pub fn play(&mut self, path: &Path, pos: Option<usize>) {
+        let tick = self.midi_context.lock().midi_tick.unwrap_or(0);
+        self.midi_context.lock().playing = true;
+
+        let data = fs::read(path).unwrap();
+
+        self.midi = Some(data.clone());
+
+        self.midi = Some(fs::read(path).unwrap());
+        let smf = Smf::parse(&data).unwrap();
+        let timer = ControlTicker::new(timing_to_ticker(smf.header.timing), self.sigrecv.clone());
+
+        let res = {
+            // let timer =
+            // nodi::timers::ControlTicker;
+            match smf.header.timing {
+                midly::Timing::Metrical(i) => u16::from(i),
+                midly::Timing::Timecode(fps, i) => fps.as_int() as u16 * i as u16, //FIXME
+            }
+        };
+
+        let sheet = match smf.header.format {
+            Format::SingleTrack | Format::Sequential => Sheet::sequential(&smf.tracks),
+            Format::Parallel => Sheet::parallel(&smf.tracks),
+        };
+
+        self.sheet = Some(sheet);
+
+        let mut player = MidPlayer::new(
+            timer,
+            self.midi_channel.clone(),
+            res,
+            self.midi_sender.clone(),
+            self.playback_context.clone(),
+            tick,
+            self.midi_context.clone(),
+        );
+
+        // i am stuck in a prison of my own creation
+        if let Some(sheet) = &self.sheet {
+            self.midi_context.lock().midi_tick_max = Some(sheet.len());
+            // we build yet another ticker because of rust borrowing rules
+            self.midi_context.lock().total = Some(
+                Duration::from_std(Ticker::try_from(smf.header.timing).unwrap().duration(sheet))
+                    .unwrap(),
+            );
+            self.midi_context.lock().playing = true;
+            player.play(sheet);
+            self.midi_context.lock().playing = false;
+        }
+    }
+}
+
 // this player is very mid
-pub struct MidPlayer<T: Timer, C: Connection> {
-    pub con: C,
+pub struct MidPlayer<T: Timer> {
+    pub con: Sender<MidiMessage>,
     pub res: u16,
     pub msg: crossbeam::channel::Sender<crate::time::PlaybackEvent>,
     pub ctx: Arc<Mutex<crate::time::PlaybackContext>>,
+    pub pos: usize,
+    pub midi_context: Arc<Mutex<MidiContext>>,
     timer: T,
 }
 
-impl<T: Timer, C: Connection> MidPlayer<T, C> {
-    pub fn new(timer: T, con: C, res: u16, msg: crossbeam::channel::Sender<crate::time::PlaybackEvent>, ctx: Arc<Mutex<crate::time::PlaybackContext>>) -> Self {
-        Self { con, timer, res, msg, ctx }
+impl<T: Timer> MidPlayer<T> {
+    pub fn new(
+        timer: T,
+        con: Sender<MidiMessage>,
+        res: u16,
+        msg: crossbeam::channel::Sender<crate::time::PlaybackEvent>,
+        ctx: Arc<Mutex<crate::time::PlaybackContext>>,
+        pos: usize,
+        midi_context: Arc<Mutex<MidiContext>>,
+    ) -> Self {
+        Self {
+            con,
+            timer,
+            res,
+            msg,
+            ctx,
+            pos,
+            midi_context,
+        }
     }
 
     pub fn set_timer(&mut self, timer: T) -> T {
@@ -317,6 +599,11 @@ impl<T: Timer, C: Connection> MidPlayer<T, C> {
         let mut file = File::open("44706.CUR").unwrap();
 
         let mut buf = vec![];
+
+        self.ctx.lock().backend = Some(crate::time::PlaybackBackend::Midi {
+            ctx: self.midi_context.clone(),
+        });
+
         // read all bytes
         file.read_to_end(&mut buf).unwrap();
         // parse file
@@ -342,8 +629,6 @@ impl<T: Timer, C: Connection> MidPlayer<T, C> {
                 return false;
             }
         };
-
-
         // get the first line of the lyrics file
         let title = lyrics.lines().next().unwrap();
 
@@ -356,7 +641,13 @@ impl<T: Timer, C: Connection> MidPlayer<T, C> {
 
         // let lyrics = WINDOWS_874.decode(&buf, DecoderTrap::Strict).unwrap();
 
-        let lyrics = lyrics.lines().skip(4).collect::<Vec<&str>>().join("\n").chars().collect::<Vec<char>>();
+        let lyrics = lyrics
+            .lines()
+            .skip(4)
+            .collect::<Vec<&str>>()
+            .join("\n")
+            .chars()
+            .collect::<Vec<char>>();
 
         // let lyrics = lyrics.chars().collect::<Vec<char>>();
 
@@ -373,34 +664,39 @@ impl<T: Timer, C: Connection> MidPlayer<T, C> {
 
         // index cursor for each lyrics character
         let mut lyric_index = 0_u32;
+        self.midi_context.lock().midi_tick_max = Some(sheet.len());
 
-        for (i, moment) in sheet.iter().enumerate() {
-            // cur_test(i as u16);
+        // todo: rewrite this player code so users can scroll it
 
-            // there are `res` ticks per quarter note
+        // while let Some(moment) = sheet.iter().next() {
+        // }
 
-            // debug!("moment: {:?}", i);
+        // let tick = self.midi_context.lock().midi_tick.unwrap_or(0);
 
-            // debug!("res: {}", self.res as usize);
+        for (i, moment) in sheet.iter().skip(self.pos).enumerate() {
+            let i = i + self.pos;
             let time: f32 = (i as f32) / self.res as f32;
-            // debug!("a: {}", a);
 
             let mid_time = time / bpm as f32 * 60.0;
             let cur_time = (mid_time * bpm as f32 * 24.0 / 60.0) as u32;
 
-            // update ctx in a separate thread
-            // let mut ctx = self.ctx.lock();
-            // ctx.playback.backend = Some(crate::time::PlaybackBackend::Midi { cursor: Some(std::sync::atomic::AtomicUsize::from(cur_time as usize)) });
+            let time = (mid_time * 1_000_000.0) as u64;
+            // let mut midicon = self.midi_context.lock();
+            self.midi_context.lock().elapsed = Some(Duration::microseconds(time as i64));
+            self.midi_context.lock().midi_tick = Some(i);
 
-
-            self.msg.send(crate::time::PlaybackEvent::Position(cur_time as usize)).unwrap();
-
+            self.msg
+                .send(crate::time::PlaybackEvent::Position(
+                    cur_time as usize,
+                    Some(mid_time),
+                    Some(i),
+                ))
+                .unwrap_or_default();
 
             // println!("cur_time: {}", cur_time as u16);
             // debug!("mid_time: {}", mid_time);
             let time_display = cur_time;
             if t.contains(&time_display) {
-
                 // we run this twice because encoding's bit weird
                 for _ in 0..2 {
                     if let Some(c) = lyrics.get(lyric_index as usize) {
@@ -454,6 +750,8 @@ impl<T: Timer, C: Connection> MidPlayer<T, C> {
                 // get moment index
                 // for (i, event) in moment.iter().enumerate() { }
                 for event in &moment.events {
+                    // let mut con = self.con.lock();
+                    // get sheet duration
                     // get event index
                     match event {
                         Event::Tempo(val) => {
@@ -465,11 +763,14 @@ impl<T: Timer, C: Connection> MidPlayer<T, C> {
                             self.timer.change_tempo(*val)
                         }
                         Event::Midi(msg) => {
-                            if !self.con.play(*msg) {
+                            if self.con.send(MidiMessage::Event(*msg)).is_err() {
                                 return false;
                             }
                         }
-                        _ => (),
+
+                        _ => {
+                            debug!("unhandled event: {:?}", event);
+                        }
                     };
                 }
             }
@@ -482,3 +783,123 @@ impl<T: Timer, C: Connection> MidPlayer<T, C> {
     }
 }
 
+// TODO: Let's make use of mpsc channels and make a dedicated midi thread. Might be a good idea and fixes the Send/Sync issues
+// I have a bad habit of rewriting everything and never using it
+/// MIDI Messages to send to the MIDI device
+pub enum MidiMessage {
+    Event(MidiEvent),
+    ClearNotes,
+    Soundfont(PathBuf),
+
+}
+
+pub enum MidiSynth {
+    Oxisynth(Arc<Mutex<Fluid>>),
+    External(Arc<Mutex<dyn Connection>>),
+}
+
+impl MidiSynth {
+    pub fn play(&mut self, msg: MidiEvent) {
+        match self {
+            MidiSynth::Oxisynth(synth) => {
+                let mut synth = synth.lock();
+                synth.play(msg);
+            }
+            MidiSynth::External(synth) => {
+                let mut synth = synth.lock();
+                synth.play(msg);
+            }
+        }
+    }
+
+    pub fn as_connection(&self) -> Arc<Mutex<dyn Connection>> {
+        match self {
+            MidiSynth::Oxisynth(synth) => synth.clone(),
+            MidiSynth::External(synth) => synth.clone(),
+        }
+    }
+
+    pub fn set_soundfont(&mut self, path: &Path) -> Result<()> {
+        match self {
+            MidiSynth::Oxisynth(synth) => {
+                let mut synth = synth.lock();
+                synth.add_soundfont(path)?;
+                synth.synth.lock().program_reset();
+            }
+            MidiSynth::External(synth) => {
+                // let mut synth = synth.lock();
+                // synth.set_soundfont(path)?;
+                error!("external midi synth doesn't support soundfonts");
+                return Err(anyhow!("external midi synth doesn't support soundfonts"));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Gets the inner FluidSynth instance. Only works if synth is Oxisynth
+    pub fn inner_synth(&self) -> Option<&Arc<Mutex<Fluid>>> {
+        match self {
+            MidiSynth::Oxisynth(synth) => Some(synth),
+            MidiSynth::External(_) => None,
+        }
+    }
+}
+
+pub struct MidiDevice {
+    pub con: MidiSynth,
+    pub msg: Receiver<MidiMessage>,
+}
+
+impl MidiDevice {
+    pub fn new(rx: Receiver<MidiMessage>, con: Option<MidiSynth>) -> Self {
+        let con = con.unwrap_or_else(|| {
+            let default_synth = Fluid::new(DEFAULT_SOUNDFONT).unwrap();
+
+            MidiSynth::Oxisynth(Arc::new(Mutex::new(default_synth)))
+        });
+
+        Self { con, msg: rx }
+    }
+
+    pub fn listen(&mut self) {
+        // set logger
+
+        let target = "MIDIThread";
+
+        debug!(
+            target: target,
+            "MIDI thread started, listening for messages"
+        );
+        while let Ok(msg) = self.msg.recv() {
+            match msg {
+                MidiMessage::Event(event) => {
+                    trace!(target: target, "Got MIDI event: {:?}", event);
+                    // let mut con = self.con.as_connection().lock();
+                    self.con.play(event);
+                }
+                MidiMessage::ClearNotes => {
+                    trace!(target: target, "Clearing notes");
+                    let con = self.con.as_connection();
+                    let mut con = con.lock();
+                    con.send_sys_rt(SystemRealtime::Reset);
+                }
+                MidiMessage::Soundfont(path) => {
+                    trace!(target: target, "Setting soundfont to {:?}", path);
+                    if self.con.set_soundfont(&path).is_err() {
+                        error!(target: target, "Failed to set soundfont");
+                    }
+                }
+                _ => {
+                    unimplemented!();
+                    // debug!(target: target, "Got unknown MIDI message: {:?}", msg);
+                }
+            }
+        }
+    }
+}
+
+pub fn midi_thread(rx: Receiver<MidiMessage>, con: Option<MidiSynth>) {
+    let mut midi = MidiDevice::new(rx, con);
+    midi.listen();
+}

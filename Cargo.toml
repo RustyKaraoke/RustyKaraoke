@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 eframe = "0.19.0"
-egui = "0.19.0"
+egui = { version = "0.19.0", features = ["deadlock_detection", "persistence"] }
 encoding = "0.2.33"
 log = "0.4.17"
 midly = "0.5.2"
@@ -17,8 +17,13 @@ nodi = "0.19.2"
 oxisynth = { version = "0.0.2", features = [] }
 cpal = { version = "0.14.1", features = ["jack"] }
 fluidlite = { version = "0.2.1", features = ["log", "builtin"] }
-parking_lot = "0.12.1"
+parking_lot = {version = "0.12.1", features= ["deadlock_detection"]}
 tokio = { version = "1.22.0", features = ["full"] }
 async-trait = "0.1.58"
 chrono = "0.4.23"
 crossbeam = { version = "0.8.2", features = ["crossbeam-channel"] }
+hhmmss = "0.1.0"
+derivative = "2.2.0"
+lazy_static = "1.4.0"
+anyhow = "1.0.66"
+
