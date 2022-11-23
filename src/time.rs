@@ -100,7 +100,8 @@ pub enum PlaybackEvent {
     Position(usize, Option<f32>, Option<usize>),
     Total(Duration),
     Pause,
-    Play,
+    // Load(PathBuf),
+    Play(PathBuf),
     Stop,
     Exit,
 }
@@ -179,7 +180,7 @@ pub fn msg_send(
                             //     .pause();
                             // midipause.0.send(()).unwrap();
                         }
-                        PlaybackEvent::Play => {
+                        PlaybackEvent::Play(file) => {
                             // very hacky var moving code. Thanks rust
                             println!("play");
                             let mprx = mprx.clone();
@@ -201,14 +202,16 @@ pub fn msg_send(
                                     }
                                 }
                                 // midi::run(tx, backend).await;
-                                mid.play(&PathBuf::from("44706.MID"), None);
+                                mid.play(&file, None);
                             });
                             // midi::run(tx.clone()).await;
                         }
                         PlaybackEvent::Stop => {
                             println!("stop");
                             let mut l = arc3.lock();
-                            l.backend.as_mut().unwrap().stop();
+                            if let Some(s) = l.backend.as_mut(){
+                                s.stop();
+                            }
                         }
                         PlaybackEvent::Exit => {
                             println!("exit");

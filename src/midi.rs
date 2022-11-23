@@ -12,7 +12,6 @@ use oxisynth::{Settings, SoundFont, Synth, SynthDescriptor};
 use std::{
     fmt,
     fs::{self, File},
-    io::Read,
     path::{Path, PathBuf},
     sync::Arc,
 };

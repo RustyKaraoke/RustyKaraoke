@@ -3,7 +3,7 @@ mod ncn;
 mod tick;
 mod time;
 mod ui;
-use std::{env, sync::Arc, thread};
+use std::{env, path::PathBuf, sync::Arc, thread};
 
 use chrono::Duration;
 use eframe::{run_native, App};
@@ -23,6 +23,7 @@ struct Frontend {
     pub context: Arc<Mutex<PlaybackContext>>,
     pub mptx: crossbeam::channel::Sender<()>,
     pub midi: crossbeam::channel::Sender<midi::MidiMessage>,
+    pub state: State,
 }
 
 impl App for Frontend {
@@ -52,6 +53,14 @@ impl App for Frontend {
             ui.horizontal(|ui| {
                 // ui.heading("RustyKaraoke");
                 ui.menu_button("File", |ui| {
+                    if ui.button("Open").clicked() {
+                        let file = native_dialog::FileDialog::new()
+                            .add_filter("MIDI", &["mid", "midi", "MID", "MIDI"])
+                            .show_open_single_file()
+                            .unwrap();
+
+                        self.state.file = file;
+                    }
                     if ui.button("Close the menu").clicked() {
                         ui.close_menu();
                     }
@@ -59,6 +68,7 @@ impl App for Frontend {
                     if ui.button("Quit").clicked() {
                         std::process::exit(0);
                     }
+
                 });
                 ui.separator();
                 ui.spacing();
@@ -74,7 +84,7 @@ impl App for Frontend {
                         }
                     });
                 });
-                ui.button("Open");
+                // ui.button("Open");
             });
             // ui.spinner();
         });
@@ -100,99 +110,114 @@ impl App for Frontend {
         // button to toggle the side panel
 
         egui::Window::new("Playback")
-            .fixed_size(egui::vec2(500.0, 200.0))
             .resizable(true)
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    if ui.button("Play").clicked() {
-                        // run await
-                        // let c = Arc::clone(&self.context);
-                        // if context.playback.player.is_none() {
-                        //     context.playback.backend = Some(time::PlaybackBackend::Midi {
-                        //         cursor: None,
-                        //     });
-                        //     let h = tokio::spawn(async move {
-                        //         midi::run(c).await;
-                        //     });
+                ui.allocate_ui(egui::vec2(500.0, 200.0), |ui| {
 
-                        //     context.playback.player = Some(h);
-                        // }
-                        // await the handle but the function is not awaitable
+                    let picked_file = if let Some(file) = &self.state.file {
+                        file.file_name().unwrap_or_default().to_str().unwrap_or_default()
+                    } else {
+                        "No file selected"
+                    };
 
-                        self.msg.send(time::PlaybackEvent::Play).unwrap();
-                    }
-                    if ui.button("Pause").clicked() {
-                        // self.msg.send(time::PlaybackEvent::Pause).unwrap();
-                        self.mptx.send(()).unwrap();
-                    }
-                    // button with icon
-                    if ui
-                        .add(ImageButton::new(
-                            egui::TextureId::default(),
-                            egui::vec2(16.0, 16.0),
-                        ))
-                        .clicked()
-                    {
-                        // debug!("Clicked");
-                        self.midi
-                            .send(midi::MidiMessage::Event(MidiEvent {
-                                channel: u4::from(1),
-                                message: MidiMessage::NoteOn {
-                                    key: {
-                                        let raw = 44;
-                                        u7::from_int_lossy(raw)
+
+                    ui.label(format!("Now playing: {}", picked_file));
+
+                    // ui.add(crate::ui::piano::Piano { state: self.state.clone() });
+                    ui.horizontal(|ui| {
+                        if ui.button("Play").clicked() {
+                            if let Some(file) = &self.state.file {
+                                self.msg
+                                    .send(time::PlaybackEvent::Play(file.to_path_buf()))
+                                    .unwrap();
+                            }
+                        }
+                        if ui.button("Pause").clicked() {
+                            // self.msg.send(time::PlaybackEvent::Pause).unwrap();
+                            self.mptx.send(()).unwrap();
+                        }
+                        // button with icon
+                        if ui
+                            .add(ImageButton::new(
+                                egui::TextureId::default(),
+                                egui::vec2(16.0, 16.0),
+                            ))
+                            .clicked()
+                        {
+                            // debug!("Clicked");
+                            self.midi
+                                .send(midi::MidiMessage::Event(MidiEvent {
+                                    channel: u4::from(1),
+                                    message: MidiMessage::NoteOn {
+                                        key: {
+                                            let raw = 44;
+                                            u7::from_int_lossy(raw)
+                                        },
+                                        vel: u7::from(100),
                                     },
-                                    vel: u7::from(100),
-                                },
-                            }))
-                            .unwrap();
-                    }
-                    if ui.button("Stop").clicked() {
-                        // let mut context = self.context.lock();
-                        self.msg.send(time::PlaybackEvent::Stop).unwrap();
-                    }
-                });
+                                }))
+                                .unwrap();
+                            self.midi
+                                .send(midi::MidiMessage::Event(MidiEvent {
+                                    channel: u4::from(1),
+                                    message: MidiMessage::NoteOff {
+                                        key: {
+                                            let raw = 44;
+                                            u7::from_int_lossy(raw)
+                                        },
+                                        vel: u7::from(100),
+                                    },
+                                }))
+                                .unwrap();
+                        }
+                        if ui.button("Stop").clicked() {
+                            // let mut context = self.context.lock();
+                            self.msg.send(time::PlaybackEvent::Stop).unwrap();
+                        }
+                    });
 
-                ui.horizontal(|ui| {
-                    let default = "00:00:00 / 00:00:00".to_string();
+                    ui.horizontal(|ui| {
+                        let default = "00:00:00 / 00:00:00".to_string();
 
-                    // i need a better way to do this.
-                    // this is yandere dev level of spaghetti code
+                        // i need a better way to do this.
+                        // this is yandere dev level of spaghetti code
 
-                    let time_txt = if let Some(backend) = &self.context.lock().backend {
-                        if let Some(time) = backend.get_time() {
-                            time
+                        let time_txt = if let Some(backend) = &self.context.lock().backend {
+                            if let Some(time) = backend.get_time() {
+                                time
+                            } else {
+                                default
+                            }
                         } else {
                             default
+                        };
+                        ui.label(&time_txt);
+                        // let context = self.context.lock().backend.as_ref().unwrap();
+
+                        let (elapsed, total) = self
+                            .context
+                            .lock()
+                            .backend
+                            .as_ref()
+                            .unwrap_or(&time::PlaybackBackend::Audio)
+                            .get_position();
+                        //
+
+                        let mut time = elapsed as f64;
+
+                        let slider = ui.add(
+                            egui::Slider::new(&mut time, 0.0..=total as f64)
+                                .text(&time_txt)
+                                .show_value(false),
+                        );
+                        if slider.dragged() {
+                            // get value
+                            debug!("time: {}", time);
+                            let backend =
+                                self.context.lock().backend.as_ref().unwrap().get_backend();
+                            backend.lock().midi_tick = Some(time as usize);
                         }
-                    } else {
-                        default
-                    };
-                    ui.label(&time_txt);
-                    // let context = self.context.lock().backend.as_ref().unwrap();
-
-                    let (elapsed, total) = self
-                        .context
-                        .lock()
-                        .backend
-                        .as_ref()
-                        .unwrap_or(&time::PlaybackBackend::Audio)
-                        .get_position();
-                    //
-
-                    let mut time = elapsed as f64;
-
-                    let slider = ui.add(
-                        egui::Slider::new(&mut time, 0.0..=total as f64)
-                            .text(&time_txt)
-                            .show_value(false),
-                    );
-                    if slider.dragged() {
-                        // get value
-                        debug!("time: {}", time);
-                        let backend = self.context.lock().backend.as_ref().unwrap().get_backend();
-                        backend.lock().midi_tick = Some(time as usize);
-                    }
+                    });
                 });
             });
 
@@ -306,6 +331,7 @@ async fn main() {
         context: backrx,
         mptx,
         midi: mtx,
+        state: State::default(),
     };
 
     // use funny crossbeam channel to send messages to the main thread
@@ -313,8 +339,7 @@ async fn main() {
 
     run_native("RustyKaraoke", native_options, Box::new(|_| Box::new(app)));
 }
-
-fn init_context() -> Arc<Mutex<Context>> {
-    let context = Context::new();
-    Arc::new(Mutex::new(context))
+#[derive(Debug, Clone, Default)]
+pub struct State {
+    pub file: Option<PathBuf>,
 }
