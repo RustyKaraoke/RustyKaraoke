@@ -3,8 +3,11 @@
 use eframe::epaint::RectShape;
 use egui::{Rounding, Widget};
 
-use crate::midi::{MidiDisplay, Track};
+use crate::midi::{Track};
 
+
+/// A piano is a MIDI display that displays the notes on a piano keyboard.
+/// It is used to display the notes of a MIDI track.
 pub struct Piano {
     pub state: Track,
 }
@@ -13,11 +16,6 @@ impl Widget for Piano {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         let Piano { state } = self;
 
-        let (id, rect) = ui.allocate_space(egui::vec2(0.0, 20.0));
-
-        // new ui with 128 keys
-
-        // ui.
 
         // let r = ui.allocate_response(egui::vec2(1000.0, 200.0), egui::Sense::hover());
         ui.horizontal(|ui| {

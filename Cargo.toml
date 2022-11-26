@@ -27,4 +27,5 @@ derivative = "2.2.0"
 lazy_static = "1.4.0"
 anyhow = "1.0.66"
 native-dialog = "0.6.3"
+rayon = "1.6.0"
 

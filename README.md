@@ -26,6 +26,8 @@ The main reason for using Rust is actually because the author only knew Rust at 
 
 Nick Karaoke is closed source and is essentially abandonware. There are cracked repacks out there in the Thai bootleg scene, but they are not updated and are not very stable. There are also patches of it such as the Karalight softsynth, which is not really stable either.
 
+eXtreme Karaoke is also pretty good, but it's not open source either. It has almost all the features we wanted to implement, but it does not like being ran on Wine.
+
 There is also an open source NCN player called [HandyKaraoke](https://github.com/pie62/HandyKaraoke), but its development seems to be dead since 2019. It is also written using C++ and Qt, which is not really my cup of tea.
 
 ## Planned tech stack
@@ -44,8 +46,15 @@ Audio engineering knowledge is needed for implementing the audio effects and VST
 
 ## List of help needed
 
-- Audio playback optimization
+- Audio playback optimization (faster audio playback, better MIDI timing)
 - GUI design and implementation with egui
-- MIDI playback controls and seeking
+- MIDI playback controls and seeking (WIP, almost there)
 - Video playback
 - Subtitle support
+- EMK file support
+- KMID support
+- CDG support
+- MP3+G support
+- Lyrics sync editor
+- VST/VSTi plugin support
+- Lyrics display on GUI

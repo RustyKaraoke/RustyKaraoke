@@ -12,9 +12,8 @@ use chrono::Duration;
 use crossbeam::channel::{Receiver, Sender};
 use derivative::Derivative;
 use hhmmss::Hhmmss;
-use log::debug;
-use parking_lot::Mutex;
-use tokio::task::JoinHandle;
+use log::{debug, warn};
+use parking_lot::{Mutex, RwLock};
 
 use crate::midi::{self, Fluid, MidiContext, MidiControl, MidiMessage};
 // should i make this a singleton?
@@ -32,7 +31,7 @@ pub struct PlaybackContext {
 #[derive(Derivative)]
 #[derivative(Debug, Clone)]
 pub enum PlaybackBackend {
-    Midi { ctx: Arc<Mutex<MidiContext>> },
+    Midi { ctx: Arc<RwLock<MidiContext>> },
     Audio,
 }
 
@@ -40,7 +39,7 @@ impl PlaybackBackend {
     pub fn get_time(&self) -> Option<String> {
         match self {
             PlaybackBackend::Midi { ctx } => {
-                let ctx = ctx.lock();
+                let ctx = ctx.read();
                 let total = ctx.total.unwrap_or_else(Duration::zero);
                 let elapsed = ctx.elapsed.unwrap_or_else(Duration::zero);
 
@@ -54,9 +53,9 @@ impl PlaybackBackend {
     pub fn get_position(&self) -> (usize, usize) {
         match self {
             PlaybackBackend::Midi { ctx } => {
-                let ctx = ctx.lock();
-                let total = ctx.midi_tick_max.unwrap_or(0);
-                let elapsed = ctx.midi_tick.unwrap_or(0);
+                let ctx = ctx.read();
+                let total = ctx.midi_tick_max;
+                let elapsed = ctx.midi_tick;
 
                 (elapsed, total)
             }
@@ -67,14 +66,14 @@ impl PlaybackBackend {
     pub fn stop(&mut self) {
         match self {
             PlaybackBackend::Midi { ctx } => {
-                let mut ctx = ctx.lock();
+                let mut ctx = ctx.write();
                 ctx.stop();
             }
             PlaybackBackend::Audio => {}
         }
     }
 
-    pub fn get_backend(&self) -> Arc<Mutex<MidiContext>> {
+    pub fn get_backend(&self) -> Arc<RwLock<MidiContext>> {
         match self {
             PlaybackBackend::Midi { ctx } => ctx.clone(),
             PlaybackBackend::Audio => unimplemented!(),
@@ -114,15 +113,15 @@ pub fn msg_send(
     midi: Sender<MidiMessage>,
 ) -> (
     Sender<PlaybackEvent>,
-    Arc<Mutex<PlaybackContext>>,
+    Arc<RwLock<PlaybackContext>>,
     Sender<()>,
 ) {
     // crossbeam channel for sending messages to the playback thread
-    let (tx, rx) = crossbeam::channel::bounded(0);
+    let (tx, rx) = crossbeam::channel::unbounded();
 
     let context = PlaybackContext::new();
 
-    let arc = Arc::new(Mutex::new(context));
+    let arc = Arc::new(RwLock::new(context));
 
     let tx2 = tx.clone();
     let tx3 = tx.clone();
@@ -155,12 +154,13 @@ pub fn msg_send(
                             println!("backend: {:?}", backend);
                         }
                         PlaybackEvent::Position(position, dur, tick) => {
-                            let mut l = arc2.lock();
+                            let mut l = arc2.read();
 
-                            if let Some(time) = dur {
-                                // try to convert to chrono duration
-                                // let dur = std::time::Duration::from_secs_f32(time);
-                                // let dur = Duration::from_std(dur).unwrap();
+                            if let Some(time) = dur {}
+                            if let Some(backend) = &l.backend {
+                                debug!("position: {:?}", backend.get_time());
+                                backend.get_backend().write().seek = true;
+                                backend.get_backend().write().midi_tick = position;
                             }
 
                             // println!("position: {:?}", position);
@@ -170,15 +170,8 @@ pub fn msg_send(
                         }
                         PlaybackEvent::Pause => {
                             println!("pause");
-                            // backend
-                            //     .lock()
-                            //     .backend
-                            //     .as_ref()
-                            //     .unwrap()
-                            //     .get_backend()
-                            //     .lock()
-                            //     .pause();
-                            // midipause.0.send(()).unwrap();
+                            midi.send(MidiMessage::ClearNotes).unwrap();
+                            mptx2.send(()).unwrap();
                         }
                         PlaybackEvent::Play(file) => {
                             // very hacky var moving code. Thanks rust
@@ -190,7 +183,7 @@ pub fn msg_send(
                             std::thread::spawn(move || {
                                 let mut mid =
                                     MidiControl::new(midi.clone(), tx3.clone(), arc3.clone(), mprx);
-                                if let Some(back) = arc3.lock().backend.as_ref() {
+                                if let Some(back) = arc3.read().backend.as_ref() {
                                     match back {
                                         PlaybackBackend::Midi { ctx } => {
                                             // ctx.lock().playing = true;
@@ -208,8 +201,8 @@ pub fn msg_send(
                         }
                         PlaybackEvent::Stop => {
                             println!("stop");
-                            let mut l = arc3.lock();
-                            if let Some(s) = l.backend.as_mut(){
+                            let mut l = arc3.write();
+                            if let Some(s) = l.backend.as_mut() {
                                 s.stop();
                             }
                         }
@@ -218,6 +211,8 @@ pub fn msg_send(
                             closing = true;
                         }
                     }
+                } else {
+                    warn!("Unable to recieve message");
                 }
             }
         }
@@ -228,20 +223,6 @@ pub fn msg_send(
 
 pub fn msg_reciever() -> (Sender<PlaybackContext>, Receiver<PlaybackContext>) {
     crossbeam::channel::bounded(0)
-}
-
-pub async fn process_ctrl_msg(
-    rx: Receiver<PlaybackEvent>,
-    closing: &mut bool,
-    tx: Sender<PlaybackEvent>,
-    backend_tx: Sender<PlaybackContext>,
-    backend: Arc<Mutex<PlaybackContext>>,
-    midipause: (Sender<()>, Receiver<()>),
-    // midicon: (Arc<Mutex<Fluid>>,Arc<Mutex<MidiContext>>),
-) {
-    // debug!("Processing message");
-
-    // backend_tx.send(*backend).unwrap();
 }
 
 #[derive(Debug, Clone)]

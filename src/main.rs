@@ -15,12 +15,12 @@ use midly::{
     MidiMessage,
 };
 use nodi::MidiEvent;
-use parking_lot::{deadlock, Mutex};
+use parking_lot::{deadlock, Mutex, RwLock};
 use time::{Context, PlaybackContext};
 
 struct Frontend {
     pub msg: crossbeam::channel::Sender<time::PlaybackEvent>,
-    pub context: Arc<Mutex<PlaybackContext>>,
+    pub context: Arc<RwLock<PlaybackContext>>,
     pub mptx: crossbeam::channel::Sender<()>,
     pub midi: crossbeam::channel::Sender<midi::MidiMessage>,
     pub state: State,
@@ -29,26 +29,6 @@ struct Frontend {
 impl App for Frontend {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         frame.set_window_title("RustyKaraoke");
-        // if cursor on window, print cursor position
-        // if ctx.input().pointer.is_moving() {
-        //     let pos = ctx.input().pointer.hover_pos();
-        //     println!("Cursor: {:?}", pos);
-        // }
-        fn sidebar_ui(ui: &mut Ui) {
-            ui.heading("Side Panel");
-            ui.label("This is a side panel");
-            ui.label("It can be used to show extra information");
-            ui.label("It can be closed by clicking the button below");
-
-            // ui.set_visible(false);
-            if ui.button("Close").clicked() {
-                // ui.close_side_panel();
-                ui.set_visible(false);
-            }
-        }
-
-        let mut side = SidePanel::right("side_panel").show(ctx, sidebar_ui);
-        // frame.set_window_size(egui::vec2(1280.0, 720.0));
         TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 // ui.heading("RustyKaraoke");
@@ -68,7 +48,6 @@ impl App for Frontend {
                     if ui.button("Quit").clicked() {
                         std::process::exit(0);
                     }
-
                 });
                 ui.separator();
                 ui.spacing();
@@ -113,13 +92,14 @@ impl App for Frontend {
             .resizable(true)
             .show(ctx, |ui| {
                 ui.allocate_ui(egui::vec2(500.0, 200.0), |ui| {
-
                     let picked_file = if let Some(file) = &self.state.file {
-                        file.file_name().unwrap_or_default().to_str().unwrap_or_default()
+                        file.file_name()
+                            .unwrap_or_default()
+                            .to_str()
+                            .unwrap_or_default()
                     } else {
                         "No file selected"
                     };
-
 
                     ui.label(format!("Now playing: {}", picked_file));
 
@@ -134,7 +114,13 @@ impl App for Frontend {
                         }
                         if ui.button("Pause").clicked() {
                             // self.msg.send(time::PlaybackEvent::Pause).unwrap();
-                            self.mptx.send(()).unwrap();
+                            self.msg.send(time::PlaybackEvent::Pause).unwrap();
+                        }
+
+                        if ui.button("Panic!").clicked() {
+                            self.midi
+                                .send(midi::MidiMessage::ClearNotes)
+                                .unwrap_or_default();
                         }
                         // button with icon
                         if ui
@@ -182,7 +168,7 @@ impl App for Frontend {
                         // i need a better way to do this.
                         // this is yandere dev level of spaghetti code
 
-                        let time_txt = if let Some(backend) = &self.context.lock().backend {
+                        let time_txt = if let Some(backend) = &self.context.read().backend {
                             if let Some(time) = backend.get_time() {
                                 time
                             } else {
@@ -196,7 +182,7 @@ impl App for Frontend {
 
                         let (elapsed, total) = self
                             .context
-                            .lock()
+                            .read()
                             .backend
                             .as_ref()
                             .unwrap_or(&time::PlaybackBackend::Audio)
@@ -210,12 +196,18 @@ impl App for Frontend {
                                 .text(&time_txt)
                                 .show_value(false),
                         );
+                        if slider.drag_started() {
+                            self.msg.send(time::PlaybackEvent::Pause).unwrap();
+                        }
+                        if slider.drag_released() {
+                            self.msg.send(time::PlaybackEvent::Pause).unwrap();
+                        }
                         if slider.dragged() {
                             // get value
-                            debug!("time: {}", time);
-                            let backend =
-                                self.context.lock().backend.as_ref().unwrap().get_backend();
-                            backend.lock().midi_tick = Some(time as usize);
+                            // debug!("time: {}", time);
+                            self.msg
+                                .send(time::PlaybackEvent::Position(time as usize, None, None))
+                                .unwrap();
                         }
                     });
                 });
@@ -225,7 +217,7 @@ impl App for Frontend {
             ui.label("Hello World!");
             ui.code(RichText::new("aaa").code());
             // let ctx = self.context.lock();
-            ui.code(format!("{:#?}", *self.context.lock()));
+            ui.code(format!("{:#?}", *self.context.read_recursive()));
             // text centered
             ui.vertical_centered(|ui| {
                 ui.heading("RustyKaraoke");
@@ -298,20 +290,22 @@ async fn main() {
 
     tokio::spawn(async move { crate::midi::midi_thread(rx, None) });
 
-    thread::spawn(move || loop {
-        thread::sleep(Duration::seconds(1).to_std().unwrap());
-        // debug!("tick");
-        let deadlocks = deadlock::check_deadlock();
-        if deadlocks.is_empty() {
-            continue;
-        }
+    tokio::spawn(async move {
+        loop {
+            thread::sleep(Duration::seconds(1).to_std().unwrap());
+            // debug!("tick");
+            let deadlocks = deadlock::check_deadlock();
+            if deadlocks.is_empty() {
+                continue;
+            }
 
-        println!("{} deadlocks detected", deadlocks.len());
-        for (i, threads) in deadlocks.iter().enumerate() {
-            println!("Deadlock #{}", i);
-            for t in threads {
-                println!("Thread Id {:#?}", t.thread_id());
-                println!("{:#?}", t.backtrace());
+            println!("{} deadlocks detected", deadlocks.len());
+            for (i, threads) in deadlocks.iter().enumerate() {
+                println!("Deadlock #{}", i);
+                for t in threads {
+                    println!("Thread Id {:#?}", t.thread_id());
+                    println!("{:#?}", t.backtrace());
+                }
             }
         }
     });

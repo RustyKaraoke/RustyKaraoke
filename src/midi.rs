@@ -8,12 +8,13 @@ use encoding::{
 };
 use lazy_static::lazy_static;
 use oxisynth::{Settings, SoundFont, Synth, SynthDescriptor};
+use rayon::prelude::IntoParallelRefMutIterator;
 /// MIDI player code
 use std::{
     fmt,
     fs::{self, File},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, atomic::AtomicUsize},
 };
 
 use midly::{live::SystemRealtime, Format, Smf, Timing};
@@ -131,7 +132,7 @@ impl MidiDisplay {
             .notes
             .iter()
             .position(|n| n.note == note && n.channel == channel)
-            .unwrap();
+            .unwrap_or_default();
 
         // debug!("note off: {}", note);
         track.notes.remove(note);
@@ -250,9 +251,9 @@ impl Connection for Fluid {
         let res = match msg.message {
             M::NoteOff { key, .. } => {
                 trace!("note off: {} {}", c, key);
-                TRACKVIEW
-                    .write()
-                    .note_off(u8::from(key), c as u8, c as usize);
+                // TRACKVIEW
+                //     .write()
+                //     .note_off(u8::from(key), c as u8, c as usize);
                 fl.send_event(oxisynth::MidiEvent::NoteOff {
                     channel: c as u8,
                     key: u8::from(key),
@@ -261,15 +262,15 @@ impl Connection for Fluid {
             M::NoteOn { key, vel } => {
                 trace!("note on: {} {} {}", c, key, vel);
 
-                if u8::from(vel) == 0 {
-                    TRACKVIEW
-                        .write()
-                        .note_off(u8::from(key), c as u8, c as usize);
-                } else {
-                    TRACKVIEW
-                        .write()
-                        .note_on(u8::from(key), u8::from(vel), c as u8, c as usize);
-                }
+                // if u8::from(vel) == 0 {
+                //     TRACKVIEW
+                //         .write()
+                //         .note_off(u8::from(key), c as u8, c as usize);
+                // } else {
+                //     TRACKVIEW
+                //         .write()
+                //         .note_on(u8::from(key), u8::from(vel), c as u8, c as usize);
+                // }
                 fl.send_event(oxisynth::MidiEvent::NoteOn {
                     channel: c as u8,
                     key: u8::from(key),
@@ -333,10 +334,11 @@ impl Connection for Fluid {
 #[derivative(Debug, Clone, Default)]
 pub struct MidiContext {
     pub playing: bool,
-    pub midi_tick: Option<usize>,
-    pub midi_tick_max: Option<usize>,
+    pub midi_tick: usize,
+    pub midi_tick_max: usize,
     pub total: Option<Duration>,
     pub elapsed: Option<Duration>,
+    pub seek: bool,
 }
 
 impl MidiContext {
@@ -348,7 +350,7 @@ impl MidiContext {
 
     pub fn stop(&mut self) {
         self.playing = false;
-        self.midi_tick = Some(0);
+        self.midi_tick = 0;
         self.elapsed = Some(Duration::zero());
     }
 
@@ -468,11 +470,11 @@ fn timing_to_ticker(timing: Timing) -> u16 {
 #[derivative(Debug, Clone)]
 pub struct MidiControl {
     pub midi_channel: Sender<MidiMessage>,
-    pub midi_context: Arc<Mutex<MidiContext>>,
+    pub midi_context: Arc<RwLock<MidiContext>>,
     pub midi: Option<Vec<u8>>,
     pub sheet: Option<Sheet>,
     pub midi_sender: Sender<PlaybackEvent>,
-    pub playback_context: Arc<Mutex<PlaybackContext>>,
+    pub playback_context: Arc<RwLock<PlaybackContext>>,
     pub sigrecv: Receiver<()>,
 }
 
@@ -480,10 +482,10 @@ impl MidiControl {
     pub fn new(
         midi_channel: Sender<MidiMessage>,
         msg: crossbeam::channel::Sender<crate::time::PlaybackEvent>,
-        ctx: Arc<Mutex<crate::time::PlaybackContext>>,
+        ctx: Arc<RwLock<crate::time::PlaybackContext>>,
         rx: Receiver<()>,
     ) -> Self {
-        let midicon = Arc::new(Mutex::new(MidiContext::new()));
+        let midicon = Arc::new(RwLock::new(MidiContext::new()));
         Self {
             midi_channel,
             midi_context: midicon,
@@ -495,15 +497,15 @@ impl MidiControl {
         }
     }
 
-    pub fn set_context(&mut self, ctx: Arc<Mutex<PlaybackContext>>) {
+    pub fn set_context(&mut self, ctx: Arc<RwLock<PlaybackContext>>) {
         self.playback_context = ctx;
     }
 
     //todo: async
     //BUG: the song just perpetually stops if you try to play it again after stopping it
     pub fn play(&mut self, path: &Path, pos: Option<usize>) {
-        let tick = self.midi_context.lock().midi_tick.unwrap_or(0);
-        self.midi_context.lock().playing = true;
+        let tick = self.midi_context.read().midi_tick;
+        self.midi_context.write().playing = true;
 
         let data = fs::read(path).unwrap();
 
@@ -541,39 +543,40 @@ impl MidiControl {
 
         // i am stuck in a prison of my own creation
         if let Some(sheet) = &self.sheet {
-            self.midi_context.lock().midi_tick_max = Some(sheet.len());
+            self.midi_context.write().midi_tick_max = sheet.len();
             // we build yet another ticker because of rust borrowing rules
-            self.midi_context.lock().total = Some(
+            self.midi_context.write().total = Some(
                 Duration::from_std(Ticker::try_from(smf.header.timing).unwrap().duration(sheet))
                     .unwrap(),
             );
-            self.midi_context.lock().playing = true;
+            self.midi_context.write().playing = true;
             player.play(sheet);
-            self.midi_context.lock().playing = false;
+            // self.midi_context.write().playing = false;
         }
     }
 }
 
 // this player is very mid
-pub struct MidPlayer<T: Timer> {
+pub struct MidPlayer {
     pub con: Sender<MidiMessage>,
     pub res: u16,
     pub msg: crossbeam::channel::Sender<crate::time::PlaybackEvent>,
-    pub ctx: Arc<Mutex<crate::time::PlaybackContext>>,
+    pub ctx: Arc<RwLock<crate::time::PlaybackContext>>,
     pub pos: usize,
-    pub midi_context: Arc<Mutex<MidiContext>>,
-    timer: T,
+    pub midi_context: Arc<RwLock<MidiContext>>,
+    timer: ControlTicker,
+    pos_lock: bool,
 }
 
-impl<T: Timer> MidPlayer<T> {
+impl MidPlayer {
     pub fn new(
-        timer: T,
+        timer: ControlTicker,
         con: Sender<MidiMessage>,
         res: u16,
         msg: crossbeam::channel::Sender<crate::time::PlaybackEvent>,
-        ctx: Arc<Mutex<crate::time::PlaybackContext>>,
+        ctx: Arc<RwLock<crate::time::PlaybackContext>>,
         pos: usize,
-        midi_context: Arc<Mutex<MidiContext>>,
+        midi_context: Arc<RwLock<MidiContext>>,
     ) -> Self {
         Self {
             con,
@@ -583,11 +586,8 @@ impl<T: Timer> MidPlayer<T> {
             ctx,
             pos,
             midi_context,
+            pos_lock: false,
         }
-    }
-
-    pub fn set_timer(&mut self, timer: T) -> T {
-        std::mem::replace(&mut self.timer, timer)
     }
 
     pub fn play(&mut self, sheet: &[Moment]) -> bool {
@@ -604,7 +604,7 @@ impl<T: Timer> MidPlayer<T> {
 
         // let mut buf = vec![];
 
-        self.ctx.lock().backend = Some(crate::time::PlaybackBackend::Midi {
+        self.ctx.write().backend = Some(crate::time::PlaybackBackend::Midi {
             ctx: self.midi_context.clone(),
         });
 
@@ -668,7 +668,7 @@ impl<T: Timer> MidPlayer<T> {
 
         // index cursor for each lyrics character
         // let mut lyric_index = 0_u32;
-        self.midi_context.lock().midi_tick_max = Some(sheet.len());
+        // self.midi_context.write().midi_tick_max = sheet.len();
 
         // todo: rewrite this player code so users can scroll it
 
@@ -676,117 +676,230 @@ impl<T: Timer> MidPlayer<T> {
         // }
 
         // let tick = self.midi_context.lock().midi_tick.unwrap_or(0);
+        fn reverse_cur_time_to_miditick(cur_time: u32, bpm: u32) -> u32 {
+            // reverse the formula for cur_time into i (midi tick)
+            let mid_time = (cur_time as f32) / bpm as f32 * 60.0;
+            // please tell me this works lol
+            (mid_time * bpm as f32 * 24.0 / 60.0) as u32
+        }
 
-        for (i, moment) in sheet.iter().skip(self.pos).enumerate() {
-            let i = i + self.pos;
-            let time: f32 = (i as f32) / self.res as f32;
+        let real_tick = reverse_cur_time_to_miditick(self.pos as u32, bpm);
 
-            let mid_time = time / bpm as f32 * 60.0;
-            let cur_time = (mid_time * bpm as f32 * 24.0 / 60.0) as u32;
+        // todo: rewrite this without iterator so we can kind of rewind
 
-            let time = (mid_time * 1_000_000.0) as u64;
-            // let mut midicon = self.midi_context.lock();
-            self.midi_context.lock().elapsed = Some(Duration::microseconds(time as i64));
-            self.midi_context.lock().midi_tick = Some(i);
+        // for (i, moment) in sheet.iter().skip(real_tick as usize).enumerate() {
+        //     let i = i + self.pos;
+        //     let time: f32 = (i as f32) / self.res as f32;
 
-            self.msg
-                .send(crate::time::PlaybackEvent::Position(
-                    cur_time as usize,
-                    Some(mid_time),
-                    Some(i),
-                ))
-                .unwrap_or_default();
+        //     let mid_time = time / bpm as f32 * 60.0;
+        //     let cur_time = (mid_time * bpm as f32 * 24.0 / 60.0) as u32;
 
-            // println!("cur_time: {}", cur_time as u16);
-            // debug!("mid_time: {}", mid_time);
-            let time_display = cur_time;
-            // if t.contains(&time_display) {
-            //     // we run this twice because encoding's bit weird
-            //     for _ in 0..2 {
-            //         if let Some(c) = lyrics.get(lyric_index as usize) {
-            //             // print the character
-            //             scroll(*c);
+        //     // debug!("test reverse: {}", reverse_cur_time_to_miditick(cur_time, bpm));
 
-            //             // increment the index
-            //             lyric_index += 1;
-            //         }
-            //     }
+        //     let time = (mid_time * 1_000_000.0) as u64;
+        //     // let mut midicon = self.midi_context.lock();
+        //     self.midi_context.write().elapsed = Some(Duration::microseconds(time as i64));
+        //     self.midi_context.write().midi_tick = Some(i);
 
-            //     // remove tick from t
-            //     let index = t.iter().position(|&r| r == time_display).unwrap();
-            //     t.remove(index);
+        //     self.pos = cur_time as usize;
 
-            //     // if time_display != time_cache {}
-            //     // println!("{} is in the file", cur_time as u16);
-            //     // time_cache = time_display;
-            //     // then we cache it so we don't print it again
-            // }
-            /* else if t.iter().all(|f| i > *f as usize) {
-                // for the skipped times, we scroll all of them at once
-                // remove all the lesser ticks from t and scroll them
+        //     if !self.midi_context.read().playing {
+        //         return false;
+        //     }
 
-                let current = t.clone();
-                let to_scroll = current
-                    .iter()
-                    .filter(|f| i > **f as usize)
-                    .collect::<Vec<&u16>>();
-                info!("there are {} ticks that was skipped", to_scroll.len());
-                info!("skipped ticks: {:?}", to_scroll);
+        //     self.msg
+        //         .send(crate::time::PlaybackEvent::Position(
+        //             cur_time as usize,
+        //             Some(mid_time),
+        //             Some(i),
+        //         ))
+        //         .unwrap_or_default();
 
-                for _ in 0..to_scroll.len() {
-                    let index = t.iter().position(|&r| r == *to_scroll[0]);
+        //     // println!("cur_time: {}", cur_time as u16);
+        //     // debug!("mid_time: {}", mid_time);
+        //     // let time_display = cur_time;
+        //     // if t.contains(&time_display) {
+        //     //     // we run this twice because encoding's bit weird
+        //     //     for _ in 0..2 {
+        //     //         if let Some(c) = lyrics.get(lyric_index as usize) {
+        //     //             // print the character
+        //     //             scroll(*c);
 
-                    if let Some(index) = index {
-                        scroll(&lyrics.remove(0).to_string());
-                        t.remove(index);
-                    }
+        //     //             // increment the index
+        //     //             lyric_index += 1;
+        //     //         }
+        //     //     }
+
+        //     //     // remove tick from t
+        //     //     let index = t.iter().position(|&r| r == time_display).unwrap();
+        //     //     t.remove(index);
+
+        //     //     // if time_display != time_cache {}
+        //     //     // println!("{} is in the file", cur_time as u16);
+        //     //     // time_cache = time_display;
+        //     //     // then we cache it so we don't print it again
+        //     // }
+        //     /* else if t.iter().all(|f| i > *f as usize) {
+        //         // for the skipped times, we scroll all of them at once
+        //         // remove all the lesser ticks from t and scroll them
+
+        //         let current = t.clone();
+        //         let to_scroll = current
+        //             .iter()
+        //             .filter(|f| i > **f as usize)
+        //             .collect::<Vec<&u16>>();
+        //         info!("there are {} ticks that was skipped", to_scroll.len());
+        //         info!("skipped ticks: {:?}", to_scroll);
+
+        //         for _ in 0..to_scroll.len() {
+        //             let index = t.iter().position(|&r| r == *to_scroll[0]);
+
+        //             if let Some(index) = index {
+        //                 scroll(&lyrics.remove(0).to_string());
+        //                 t.remove(index);
+        //             }
+        //         }
+        //     } */
+        //     // else the current time is bigger than any of the times in the file
+
+        //     if !moment.is_empty() {
+        //         self.timer.sleep(counter);
+        //         // info!("playing moment {}", cur_time);
+        //         counter = 0;
+
+        //         // get play progress
+
+        //         // get moment index
+        //         // for (i, event) in moment.iter().enumerate() { }
+        //         for event in &moment.events {
+        //             // let mut con = self.con.lock();
+        //             // get sheet duration
+        //             // get event index
+        //             match event {
+        //                 Event::Tempo(val) => {
+        //                     // debug!("tempo: {}", val);
+        //                     // bpm is microseconds per beat
+        //                     bpm = 60_000 / (val / 1000);
+        //                     // println!("bpm: {}", bpm);
+        //                     // convert to microseconds per tick
+        //                     self.timer.change_tempo(*val)
+        //                 }
+        //                 Event::Midi(msg) => {
+        //                     if self.con.send(MidiMessage::Event(*msg)).is_err() {
+        //                         return false;
+        //                     }
+        //                 }
+
+        //                 _ => {
+        //                     debug!("unhandled event: {:?}", event);
+        //                 }
+        //             };
+        //         }
+        //     }
+
+        //     // info!("counter: {}", counter);
+        //     counter += 1;
+        // }
+
+        // rewrite above so you can scroll it
+
+        while self.midi_context.read().playing {
+            let time = (self.pos as f32) / self.res as f32;
+
+            let seconds = time / bpm as f32 * 60.0;
+            let cur_time = (seconds * bpm as f32 * 24.0 / 60.0) as u32;
+
+            let time = (seconds * 1_000_000.0) as u64;
+
+            if let Some(mut write) = self.midi_context.try_write(){
+                write.elapsed = Some(Duration::microseconds(time as i64));
+
+                // if write.seek {
+                //     self.pos = write.midi_tick;
+                //     write.seek = false;
+                // } else {
+                //     self.midi_context.write().midi_tick = self.pos;
+                // }
+            }
+            // weird var sync
+            // self.pos = self.midi_context.read().midi_tick.unwrap_or_default() as usize;
+            // self.midi_context.write().midi_tick = Some(self.pos as usize);
+            // self.pos = self.midi_context.read().midi_tick.clone();
+
+            if self.midi_context.read().seek {
+                self.pos = self.midi_context.read().midi_tick;
+                if let Some(mut write) = self.midi_context.try_write() {
+                    write.seek = false;
                 }
-            } */
-
-            // else the current time is bigger than any of the times in the file
-
-            if !moment.is_empty() {
-                self.timer.sleep(counter);
-                // info!("playing moment {}", cur_time);
-                counter = 0;
-
-                // get play progress
-
-                // get moment index
-                // for (i, event) in moment.iter().enumerate() { }
-                for event in &moment.events {
-                    // let mut con = self.con.lock();
-                    // get sheet duration
-                    // get event index
-                    match event {
-                        Event::Tempo(val) => {
-                            // debug!("tempo: {}", val);
-                            // bpm is microseconds per beat
-                            bpm = 60_000 / (val / 1000);
-                            // println!("bpm: {}", bpm);
-                            // convert to microseconds per tick
-                            self.timer.change_tempo(*val)
-                        }
-                        Event::Midi(msg) => {
-                            if self.con.send(MidiMessage::Event(*msg)).is_err() {
-                                return false;
-                            }
-                        }
-
-                        _ => {
-                            debug!("unhandled event: {:?}", event);
-                        }
-                    };
-                }
+            } else {
+                self.midi_context.write().midi_tick = self.pos;
             }
 
-            // info!("counter: {}", counter);
-            counter += 1;
+            // debug!("seek: {}", self.midi_context.try_read().unwrap().seek);
+
+            // debug!("{}", self.pos);
+
+
+            if let Some(moment) = sheet.get(self.pos as usize) {
+                if !moment.is_empty() {
+                    self.timer.sleep(counter);
+                    // info!("playing moment {}", cur_time);
+                    counter = 0;
+
+                    // get play progress
+
+                    // get moment index
+                    // for (i, event) in moment.iter().enumerate() { }
+                    for event in &moment.events {
+                        // let mut con = self.con.lock();
+                        // get sheet duration
+                        // get event index
+                        match event {
+                            Event::Tempo(val) => {
+                                // debug!("tempo: {}", val);
+                                // bpm is microseconds per beat
+                                bpm = 60_000 / (val / 1000);
+                                // println!("bpm: {}", bpm);
+                                // convert to microseconds per tick
+                                self.timer.change_tempo(*val)
+                            }
+                            Event::Midi(msg) => {
+                                if self.con.send(MidiMessage::Event(*msg)).is_err() {
+                                    return false;
+                                }
+                            }
+
+                            Event::KeySignature(val, major ) => {
+                                // if val is positive, it's a sharp
+                                // if val is negative, it's a flat
+
+                                if val.is_negative() {
+
+                                }
+                            }
+
+                            _ => {
+                                debug!("unhandled event: {:?}", event);
+                            }
+                        };
+                    }
+                    // update tick counter to next tick
+                }
+                counter += 1;
+                self.pos += 1;
+
+
+            }
+            // if it's greater than the last tick, stop playing
+            if self.pos >= self.midi_context.read().midi_tick_max {
+                self.midi_context.write().playing = false;
+            }
         }
 
         true
     }
 }
+
 
 // TODO: Let's make use of mpsc channels and make a dedicated midi thread. Might be a good idea and fixes the Send/Sync issues
 // I have a bad habit of rewriting everything and never using it
@@ -806,12 +919,19 @@ impl MidiSynth {
     pub fn play(&mut self, msg: MidiEvent) {
         match self {
             MidiSynth::Oxisynth(synth) => {
-                let mut synth = synth.lock();
-                synth.play(msg);
+                let mut synth = synth.try_lock();
+
+                if let Some(synth) = synth.as_mut() {
+                    synth.play(msg);
+                }
+                // synth.play(msg);
             }
             MidiSynth::External(synth) => {
-                let mut synth = synth.lock();
-                synth.play(msg);
+                let mut synth = synth.try_lock();
+
+                if let Some(synth) = synth.as_mut() {
+                    synth.play(msg);
+                }
             }
         }
     }
@@ -826,14 +946,9 @@ impl MidiSynth {
     pub fn set_soundfont(&mut self, path: &Path) -> Result<()> {
         match self {
             MidiSynth::Oxisynth(synth) => {
-                let mut synth = synth.lock();
-                synth.add_soundfont(path)?;
-                synth.synth.lock().program_reset();
+                synth.lock().add_soundfont(path)?;
             }
-            MidiSynth::External(synth) => {
-                // let mut synth = synth.lock();
-                // synth.set_soundfont(path)?;
-                error!("external midi synth doesn't support soundfonts");
+            MidiSynth::External(_) => {
                 return Err(anyhow!("external midi synth doesn't support soundfonts"));
             }
         }
@@ -875,7 +990,10 @@ impl MidiDevice {
             target: target,
             "MIDI thread started, listening for messages"
         );
+
+        // self.msg.
         while let Ok(msg) = self.msg.recv() {
+
             match msg {
                 MidiMessage::Event(event) => {
                     trace!(target: target, "Got MIDI event: {:?}", event);
@@ -886,7 +1004,8 @@ impl MidiDevice {
                     trace!(target: target, "Clearing notes");
                     let con = self.con.as_connection();
                     let mut con = con.lock();
-                    con.send_sys_rt(SystemRealtime::Reset);
+                    // con.send_sys_rt(SystemRealtime::Reset);
+                    con.all_notes_off();
                 }
                 MidiMessage::Soundfont(path) => {
                     trace!(target: target, "Setting soundfont to {:?}", path);
