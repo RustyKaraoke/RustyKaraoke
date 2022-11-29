@@ -28,4 +28,7 @@ lazy_static = "1.4.0"
 anyhow = "1.0.66"
 native-dialog = "0.6.3"
 rayon = "1.6.0"
-
+num-derive = "0.3.3"
+num-traits = "0.2.15"
+flate2 = "1.0.25"
+md-5 = "0.10.5"

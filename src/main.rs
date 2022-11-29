@@ -1,5 +1,6 @@
 mod midi;
 mod ncn;
+mod emk;
 mod tick;
 mod time;
 mod ui;
@@ -8,7 +9,6 @@ use std::{env, path::PathBuf, sync::Arc, thread};
 use chrono::Duration;
 use eframe::{run_native, App};
 use egui::{CentralPanel, Frame, ImageButton, RichText, ScrollArea, SidePanel, TopBottomPanel, Ui};
-use hhmmss::Hhmmss;
 use log::{debug, LevelFilter};
 use midly::{
     num::{u4, u7},
