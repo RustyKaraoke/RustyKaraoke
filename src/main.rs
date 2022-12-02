@@ -1,6 +1,8 @@
+mod emk;
+mod karaoke;
 mod midi;
 mod ncn;
-mod emk;
+mod ncn_reader;
 mod tick;
 mod time;
 mod ui;
